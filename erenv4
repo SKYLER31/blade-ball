@@ -79,6 +79,7 @@ local Flags = {
     AutoSpamType     = "Remote",
     PingCompensation = true,
     CurvedDetect     = true,
+    AntiCurve        = false,      -- Predict curved ball impact point
     AntiPhantom      = false,
     Visualizer       = false,
     BallSpeedHUD     = false,
@@ -815,6 +816,145 @@ AP.IsCurved = function(ball)
     return score >= 3 or backCurve
 end
 
+-- ─────────────────────────────────────────────
+--  ANTI-CURVE ENGINE
+-- ─────────────────────────────────────────────
+AP.CurveHistory = {}  -- ball → {pos, vel, time}[]
+
+AP.RecordBallState = function(ball)
+    if not AP.CurveHistory[ball] then AP.CurveHistory[ball] = {} end
+    local zoomies = ball:FindFirstChild("zoomies")
+    if not zoomies then return end
+    table.insert(AP.CurveHistory[ball], {
+        pos = ball.Position,
+        vel = zoomies.VectorVelocity,
+        t   = tick()
+    })
+    if #AP.CurveHistory[ball] > 12 then
+        table.remove(AP.CurveHistory[ball], 1)
+    end
+end
+
+AP.PredictImpact = function(ball, lookaheadMs)
+    local char = LocalPlayer.Character
+    if not char or not char.PrimaryPart then return nil end
+    local zoomies = ball:FindFirstChild("zoomies")
+    if not zoomies then return nil end
+
+    local pos = ball.Position
+    local vel = zoomies.VectorVelocity
+    local dt  = (lookaheadMs or 150) / 1000
+
+    -- Angular acceleration from history
+    local angAccel = Vector3.new(0, 0, 0)
+    local hist = AP.CurveHistory[ball]
+    if hist and #hist >= 3 then
+        local n    = #hist
+        local prev2 = hist[n-2]
+        local prev1 = hist[n-1]
+        local curr  = hist[n]
+        local dt1   = prev1.t - prev2.t
+        local dt2   = curr.t  - prev1.t
+        if dt1 > 0.001 and dt2 > 0.001 then
+            local accel1 = (prev1.vel - prev2.vel) / dt1
+            local accel2 = (curr.vel  - prev1.vel) / dt2
+            angAccel = (accel1 + accel2) * 0.5
+        end
+    end
+
+    -- Kinematic prediction: p + v*t + 0.5*a*t^2
+    local predicted = pos + vel * dt + angAccel * (dt * dt * 0.5)
+
+    -- Clamp Y to player height range
+    local rootY = char.PrimaryPart.Position.Y
+    predicted = Vector3.new(
+        predicted.X,
+        math.clamp(predicted.Y, rootY - 8, rootY + 25),
+        predicted.Z
+    )
+    return predicted
+end
+
+AP.AntiCurveParry = function()
+    local char = LocalPlayer.Character
+    if not char or not char.PrimaryPart then return end
+    local ball = AP.GetBall()
+    if not ball then return end
+
+    local ping      = GetAveragePing()
+    local lookahead = ping + 80
+    local predicted = AP.PredictImpact(ball, lookahead)
+
+    -- Build parry data toward predicted point
+    local cam    = Camera
+    local events = {}
+    local ml     = isMobile and {cam.ViewportSize.X/2, cam.ViewportSize.Y/2} or (function()
+        local m = UserInputService:GetMouseLocation()
+        return {m.X, m.Y}
+    end)()
+
+    local aliveCont = Workspace:FindFirstChild("Alive")
+    if aliveCont then
+        for _, v in ipairs(aliveCont:GetChildren()) do
+            if v ~= char then
+                local ok, sp = pcall(function()
+                    return cam:WorldToScreenPoint(v.PrimaryPart.Position)
+                end)
+                if ok then events[tostring(v)] = sp end
+            end
+        end
+    end
+
+    local rootPos  = char.PrimaryPart.Position
+    local targetCF = predicted
+        and CFrame.new(rootPos, predicted)
+        or  cam.CFrame
+    local pdata = {0, targetCF, events, ml}
+
+    -- Fire remote with anti-curve CFrame
+    local hasRemote = false
+    for remote, origArgs in pairs(ParryRemotes) do
+        hasRemote = true
+        local mArgs = {origArgs[1], origArgs[2], 0, pdata[2], pdata[3], pdata[4]}
+        pcall(function()
+            if remote:IsA("RemoteEvent") then
+                remote:FireServer(table.unpack(mArgs))
+            elseif remote:IsA("RemoteFunction") then
+                remote:InvokeServer(table.unpack(mArgs))
+            end
+        end)
+    end
+
+    if not hasRemote or Flags.AutoParryType == "Keypress" then
+        local orig   = cam.CFrame
+        local target = targetCF * CFrame.Angles(
+            math.rad(math.random(-3, 3)),
+            math.rad(math.random(-3, 3)), 0
+        )
+        local dur    = 0.09 + math.random(-5, 5)/1000
+        local startT = tick()
+        local conn
+        conn = RunService.Heartbeat:Connect(function()
+            local el = tick() - startT
+            if el >= dur then
+                conn:Disconnect()
+                SimParry()
+                task.delay(0.2, function()
+                    local bs = tick()
+                    local bc
+                    bc = RunService.Heartbeat:Connect(function()
+                        local be = tick() - bs
+                        if be >= 0.12 then bc:Disconnect(); return end
+                        cam.CFrame = target:Lerp(orig, 1-(1-(be/0.12))^2)
+                    end)
+                end)
+                return
+            end
+            cam.CFrame = orig:Lerp(target, (el/dur)^2)
+        end)
+    end
+end
+
 -- Parry data
 AP.ParryData = function(ptype)
     local char = LocalPlayer.Character
@@ -1063,12 +1203,21 @@ RunService.Heartbeat:Connect(function()
 
             local curved   = AP.IsCurved(ball)
             local ptype    = Flags.AutoParryDir
-            if curved then ptype = "Camera" end
+
+            -- Record ball state for anti-curve engine every frame
+            AP.RecordBallState(ball)
 
             if dot > 0.4 and dist < parryDist and Parries < 8 then
                 if now - LastParry >= MinDelay then
                     LastParry = now
-                    task.spawn(function() AP.Parry(ptype) end)
+                    if curved and Flags.AntiCurve then
+                        -- Use impact prediction parry
+                        task.spawn(function() AP.AntiCurveParry() end)
+                    elseif curved then
+                        task.spawn(function() AP.Parry("Camera") end)
+                    else
+                        task.spawn(function() AP.Parry(ptype) end)
+                    end
                 end
             end
         end
@@ -1168,6 +1317,10 @@ Section(AutoParryPage, "Advanced")
 Toggle(AutoParryPage, "Ping Compensation", "Adjust parry timing based on your ping", "PingCompensation", nil)
 
 Toggle(AutoParryPage, "Curved Ball Detection", "Detect curved balls and adjust direction", "CurvedDetect", nil)
+
+Toggle(AutoParryPage, "Anti-Curve", "Predict curved ball impact & parry toward it", "AntiCurve", function(v)
+    Notify("Anti-Curve", v and "Active — predicting curved ball impact" or "Disabled", v and "success" or "error", 2)
+end)
 
 Toggle(AutoParryPage, "Anti-Phantom", "Chase ball while phantom is active", "AntiPhantom", nil)
 
