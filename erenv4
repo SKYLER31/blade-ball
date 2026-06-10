@@ -1,0 +1,1352 @@
+--[[
+    ╔══════════════════════════════════════════╗
+    ║        SKYLER HUB  |  Blade Ball         ║
+    ║            Script by Skyler              ║
+    ║                 v2.0                     ║
+    ╚══════════════════════════════════════════╝
+    Features:
+    · Dual-mode Auto Parry (Remote + Keypress fallback)
+    · Ping-compensated timing engine
+    · Curved ball multi-layer detection
+    · Smart auto-spam (speed + distance based)
+    · Anti-phantom movement lock
+    · Parry visualizer sphere
+    · Ball info HUD (velocity, peak, curve)
+    · Korblox & Headless (local)
+    · Fullbright / Custom lighting
+    · Ball chaser AI with bezier movement
+    · Purple animated UI
+]]
+
+-- ─────────────────────────────────────────────
+--  SERVICES
+-- ─────────────────────────────────────────────
+local Players            = cloneref(game:GetService("Players"))
+local RunService         = cloneref(game:GetService("RunService"))
+local UserInputService   = cloneref(game:GetService("UserInputService"))
+local TweenService       = cloneref(game:GetService("TweenService"))
+local ReplicatedStorage  = cloneref(game:GetService("ReplicatedStorage"))
+local CoreGui            = cloneref(game:GetService("CoreGui"))
+local VirtualInputManager= game:GetService("VirtualInputManager")
+local ContextActionService=cloneref(game:GetService("ContextActionService"))
+local Workspace          = cloneref(workspace)
+
+local LocalPlayer = Players.LocalPlayer
+local Camera      = Workspace.CurrentCamera
+
+-- ─────────────────────────────────────────────
+--  PALETTE
+-- ─────────────────────────────────────────────
+local C = {
+    BG          = Color3.fromRGB(10,  8,  20),
+    PANEL       = Color3.fromRGB(18, 14, 35),
+    CARD        = Color3.fromRGB(26, 20, 50),
+    ACCENT      = Color3.fromRGB(138, 43, 226),   -- violet
+    ACCENT2     = Color3.fromRGB(180, 90, 255),
+    ACCENT_DIM  = Color3.fromRGB(80, 20, 140),
+    TEXT        = Color3.fromRGB(230, 220, 255),
+    TEXT_DIM    = Color3.fromRGB(130, 110, 170),
+    TOGGLE_ON   = Color3.fromRGB(138, 43, 226),
+    TOGGLE_OFF  = Color3.fromRGB(45, 35, 70),
+    STROKE      = Color3.fromRGB(90, 50, 160),
+    RED         = Color3.fromRGB(220, 60, 80),
+    GREEN       = Color3.fromRGB(80, 220, 120),
+}
+
+-- ─────────────────────────────────────────────
+--  TWEEN HELPERS
+-- ─────────────────────────────────────────────
+local function tween(obj, props, t, style, dir)
+    style = style or Enum.EasingStyle.Quint
+    dir   = dir   or Enum.EasingDirection.Out
+    TweenService:Create(obj, TweenInfo.new(t or 0.25, style, dir), props):Play()
+end
+
+local function flash(label, col, t)
+    local orig = label.TextColor3
+    tween(label, {TextColor3 = col}, 0.1)
+    task.delay(t or 0.3, function() tween(label, {TextColor3 = orig}, 0.2) end)
+end
+
+-- ─────────────────────────────────────────────
+--  FLAGS (config state)
+-- ─────────────────────────────────────────────
+local Flags = {
+    AutoParry        = false,
+    AutoParryType    = "Remote",   -- "Remote" | "Keypress"
+    AutoParryDir     = "Camera",   -- "Camera" | "Straight" | "Backwards" | "High" | "Left" | "Right" | "Random"
+    AutoSpam         = false,
+    AutoSpamType     = "Remote",
+    PingCompensation = true,
+    CurvedDetect     = true,
+    AntiPhantom      = false,
+    Visualizer       = false,
+    BallSpeedHUD     = false,
+    Fullbright       = false,
+    BallChaser       = false,
+    Headless         = false,
+    Korblox          = false,
+}
+
+-- ─────────────────────────────────────────────
+--  UI BOOT — destroy old instance
+-- ─────────────────────────────────────────────
+local old = CoreGui:FindFirstChild("SkylerHub")
+if old then old:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name            = "SkylerHub"
+ScreenGui.ResetOnSpawn    = false
+ScreenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent          = CoreGui
+
+-- ─────────────────────────────────────────────
+--  MAIN WINDOW
+-- ─────────────────────────────────────────────
+local Main = Instance.new("Frame")
+Main.Name              = "Main"
+Main.Size              = UDim2.fromOffset(640, 440)
+Main.Position          = UDim2.new(0.5,-320,0.5,-220)
+Main.BackgroundColor3  = C.BG
+Main.BorderSizePixel   = 0
+Main.Active            = true
+Main.Parent            = ScreenGui
+Instance.new("UICorner",Main).CornerRadius = UDim.new(0,14)
+
+-- Outer glow stroke
+local MainStroke = Instance.new("UIStroke", Main)
+MainStroke.Color       = C.ACCENT
+MainStroke.Thickness   = 1.5
+MainStroke.Transparency= 0.3
+
+-- Gradient top bar
+local TopBar = Instance.new("Frame", Main)
+TopBar.Size            = UDim2.new(1,0,0,48)
+TopBar.BackgroundColor3= C.PANEL
+TopBar.BorderSizePixel = 0
+Instance.new("UICorner",TopBar).CornerRadius = UDim.new(0,14)
+
+local TopFix = Instance.new("Frame", TopBar)   -- fill bottom corners of topbar
+TopFix.Size            = UDim2.new(1,0,0.5,0)
+TopFix.Position        = UDim2.new(0,0,0.5,0)
+TopFix.BackgroundColor3= C.PANEL
+TopFix.BorderSizePixel = 0
+
+local TopGrad = Instance.new("UIGradient", TopBar)
+TopGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, C.ACCENT_DIM),
+    ColorSequenceKeypoint.new(1, C.PANEL),
+}
+TopGrad.Rotation = 90
+
+-- Logo / title
+local Logo = Instance.new("TextLabel", TopBar)
+Logo.Size              = UDim2.new(0,200,1,0)
+Logo.Position          = UDim2.new(0,18,0,0)
+Logo.BackgroundTransparency = 1
+Logo.Text              = "✦  SKYLER HUB"
+Logo.Font              = Enum.Font.GothamBlack
+Logo.TextSize          = 15
+Logo.TextColor3        = C.TEXT
+Logo.TextXAlignment    = Enum.TextXAlignment.Left
+
+local LogoGrad = Instance.new("UIGradient", Logo)
+LogoGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, C.ACCENT2),
+    ColorSequenceKeypoint.new(1, C.TEXT),
+}
+
+-- Subtitle
+local Sub = Instance.new("TextLabel", TopBar)
+Sub.Size               = UDim2.new(0,300,0,14)
+Sub.Position           = UDim2.new(0,18,0,28)
+Sub.BackgroundTransparency = 1
+Sub.Text               = "Blade Ball  ·  Script by Skyler  ·  v2.0"
+Sub.Font               = Enum.Font.Gotham
+Sub.TextSize           = 11
+Sub.TextColor3         = C.TEXT_DIM
+Sub.TextXAlignment     = Enum.TextXAlignment.Left
+
+-- Close button
+local CloseBtn = Instance.new("TextButton", TopBar)
+CloseBtn.Size          = UDim2.fromOffset(28,28)
+CloseBtn.Position      = UDim2.new(1,-38,0,10)
+CloseBtn.BackgroundColor3 = C.ACCENT_DIM
+CloseBtn.Text          = "✕"
+CloseBtn.Font          = Enum.Font.GothamBold
+CloseBtn.TextSize      = 13
+CloseBtn.TextColor3    = C.TEXT
+CloseBtn.AutoButtonColor = false
+Instance.new("UICorner",CloseBtn).CornerRadius = UDim.new(0,6)
+
+CloseBtn.MouseEnter:Connect(function() tween(CloseBtn,{BackgroundColor3=C.RED},0.15) end)
+CloseBtn.MouseLeave:Connect(function() tween(CloseBtn,{BackgroundColor3=C.ACCENT_DIM},0.15) end)
+CloseBtn.MouseButton1Click:Connect(function()
+    tween(Main,{Size=UDim2.fromOffset(640,0),Position=UDim2.new(0.5,-320,0.5,0)},0.35,Enum.EasingStyle.Back,Enum.EasingDirection.In)
+    task.delay(0.4,function() ScreenGui.Enabled = false end)
+end)
+
+-- Minimize button
+local MinBtn = Instance.new("TextButton", TopBar)
+MinBtn.Size            = UDim2.fromOffset(28,28)
+MinBtn.Position        = UDim2.new(1,-72,0,10)
+MinBtn.BackgroundColor3= C.CARD
+MinBtn.Text            = "─"
+MinBtn.Font            = Enum.Font.GothamBold
+MinBtn.TextSize        = 13
+MinBtn.TextColor3      = C.TEXT_DIM
+MinBtn.AutoButtonColor = false
+Instance.new("UICorner",MinBtn).CornerRadius = UDim.new(0,6)
+
+local minimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    if minimized then
+        tween(Main,{Size=UDim2.fromOffset(640,48)},0.35,Enum.EasingStyle.Quint)
+    else
+        tween(Main,{Size=UDim2.fromOffset(640,440)},0.35,Enum.EasingStyle.Quint)
+    end
+end)
+
+-- Drag
+do
+    local dragging, dragStart, startPos = false, nil, nil
+    TopBar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging  = true
+            dragStart = i.Position
+            startPos  = Main.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = i.Position - dragStart
+            Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset+delta.X, startPos.Y.Scale, startPos.Y.Offset+delta.Y)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end)
+end
+
+-- ─────────────────────────────────────────────
+--  SIDEBAR TABS
+-- ─────────────────────────────────────────────
+local Sidebar = Instance.new("Frame", Main)
+Sidebar.Size           = UDim2.new(0,130,1,-48)
+Sidebar.Position       = UDim2.new(0,0,0,48)
+Sidebar.BackgroundColor3 = C.PANEL
+Sidebar.BorderSizePixel= 0
+
+local SideList = Instance.new("UIListLayout", Sidebar)
+SideList.Padding       = UDim.new(0,4)
+SideList.SortOrder     = Enum.SortOrder.LayoutOrder
+Instance.new("UIPadding",Sidebar).PaddingTop = UDim.new(0,10)
+
+-- Content area
+local Content = Instance.new("Frame", Main)
+Content.Size           = UDim2.new(1,-136,1,-54)
+Content.Position       = UDim2.new(0,134,0,52)
+Content.BackgroundTransparency = 1
+Content.ClipsDescendants = true
+
+-- Tab pages container
+local Pages = Instance.new("Frame", Content)
+Pages.Size             = UDim2.new(1,0,1,0)
+Pages.BackgroundTransparency = 1
+
+-- ─────────────────────────────────────────────
+--  TAB BUILDER
+-- ─────────────────────────────────────────────
+local tabList   = {}
+local pageList  = {}
+local activeTab = nil
+
+local function CreateTab(name, icon)
+    local btn = Instance.new("TextButton", Sidebar)
+    btn.Size            = UDim2.new(1,-12,0,36)
+    btn.Position        = UDim2.new(0,6,0,0)
+    btn.BackgroundColor3= C.CARD
+    btn.Text            = (icon or "") .. "  " .. name
+    btn.Font            = Enum.Font.GothamSemibold
+    btn.TextSize        = 12
+    btn.TextColor3      = C.TEXT_DIM
+    btn.AutoButtonColor = false
+    btn.TextXAlignment  = Enum.TextXAlignment.Left
+    btn.LayoutOrder     = #tabList + 1
+    local btnCorner     = Instance.new("UICorner",btn)
+    btnCorner.CornerRadius = UDim.new(0,8)
+    Instance.new("UIPadding",btn).PaddingLeft = UDim.new(0,10)
+
+    local indicator = Instance.new("Frame", btn)
+    indicator.Size   = UDim2.new(0,3,0.7,0)
+    indicator.Position = UDim2.new(0,-6,0.15,0)
+    indicator.BackgroundColor3 = C.ACCENT
+    indicator.BorderSizePixel  = 0
+    indicator.BackgroundTransparency = 1
+    Instance.new("UICorner",indicator).CornerRadius = UDim.new(1,0)
+
+    -- Page
+    local page = Instance.new("ScrollingFrame", Pages)
+    page.Size              = UDim2.new(1,0,1,0)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel   = 0
+    page.ScrollBarThickness= 3
+    page.ScrollBarImageColor3 = C.ACCENT
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.CanvasSize        = UDim2.new(0,0,0,0)
+    page.Visible           = false
+
+    local pageLayout = Instance.new("UIListLayout", page)
+    pageLayout.Padding     = UDim.new(0,8)
+    pageLayout.SortOrder   = Enum.SortOrder.LayoutOrder
+    Instance.new("UIPadding",page).PaddingTop = UDim.new(0,8)
+
+    local idx = #tabList + 1
+    tabList[idx]  = btn
+    pageList[idx] = page
+
+    btn.MouseButton1Click:Connect(function()
+        if activeTab == idx then return end
+        if activeTab then
+            local ob = tabList[activeTab]
+            tween(ob,{BackgroundColor3=C.CARD,TextColor3=C.TEXT_DIM},0.2)
+            ob:FindFirstChild("Frame").BackgroundTransparency = 1
+            pageList[activeTab].Visible = false
+        end
+        activeTab = idx
+        tween(btn,{BackgroundColor3=C.ACCENT_DIM,TextColor3=C.TEXT},0.2)
+        indicator.BackgroundTransparency = 0
+        page.Visible = true
+    end)
+
+    btn.MouseEnter:Connect(function()
+        if activeTab ~= idx then tween(btn,{BackgroundColor3=C.CARD},0.1) end
+        tween(btn,{TextColor3=C.TEXT},0.1)
+    end)
+    btn.MouseLeave:Connect(function()
+        if activeTab ~= idx then
+            tween(btn,{BackgroundColor3=C.CARD,TextColor3=C.TEXT_DIM},0.1)
+        end
+    end)
+
+    return page
+end
+
+-- ─────────────────────────────────────────────
+--  ELEMENT BUILDER
+-- ─────────────────────────────────────────────
+local function Section(page, title)
+    local f = Instance.new("Frame", page)
+    f.Size              = UDim2.new(1,-16,0,24)
+    f.BackgroundTransparency = 1
+    f.LayoutOrder       = page:FindFirstChildOfClass("UIListLayout") and #page:GetChildren() or 0
+
+    local line = Instance.new("Frame", f)
+    line.Size           = UDim2.new(1,0,0,1)
+    line.Position       = UDim2.new(0,0,0.5,0)
+    line.BackgroundColor3 = C.STROKE
+    line.BorderSizePixel= 0
+
+    local lbl = Instance.new("TextLabel", f)
+    lbl.Size            = UDim2.new(0,120,1,0)
+    lbl.Position        = UDim2.new(0,8,0,0)
+    lbl.BackgroundColor3= C.BG
+    lbl.Text            = "  " .. title .. "  "
+    lbl.Font            = Enum.Font.GothamBold
+    lbl.TextSize        = 11
+    lbl.TextColor3      = C.ACCENT2
+    lbl.TextXAlignment  = Enum.TextXAlignment.Left
+    return f
+end
+
+local function Toggle(page, title, desc, flag, callback)
+    local card = Instance.new("Frame", page)
+    card.Size           = UDim2.new(1,-16,0,54)
+    card.BackgroundColor3 = C.CARD
+    card.BorderSizePixel= 0
+    Instance.new("UICorner",card).CornerRadius = UDim.new(0,10)
+    local s = Instance.new("UIStroke",card)
+    s.Color = C.STROKE; s.Thickness = 1; s.Transparency = 0.6
+
+    local titleLbl = Instance.new("TextLabel", card)
+    titleLbl.Size       = UDim2.new(1,-60,0,22)
+    titleLbl.Position   = UDim2.new(0,14,0,6)
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Text       = title
+    titleLbl.Font       = Enum.Font.GothamSemibold
+    titleLbl.TextSize   = 13
+    titleLbl.TextColor3 = C.TEXT
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local descLbl = Instance.new("TextLabel", card)
+    descLbl.Size        = UDim2.new(1,-60,0,18)
+    descLbl.Position    = UDim2.new(0,14,0,28)
+    descLbl.BackgroundTransparency = 1
+    descLbl.Text        = desc or ""
+    descLbl.Font        = Enum.Font.Gotham
+    descLbl.TextSize    = 11
+    descLbl.TextColor3  = C.TEXT_DIM
+    descLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- Toggle pill
+    local pill = Instance.new("Frame", card)
+    pill.Size           = UDim2.fromOffset(44,24)
+    pill.Position       = UDim2.new(1,-58,0.5,-12)
+    pill.BackgroundColor3 = C.TOGGLE_OFF
+    pill.BorderSizePixel= 0
+    Instance.new("UICorner",pill).CornerRadius = UDim.new(1,0)
+
+    local knob = Instance.new("Frame", pill)
+    knob.Size           = UDim2.fromOffset(18,18)
+    knob.Position       = UDim2.new(0,3,0.5,-9)
+    knob.BackgroundColor3 = Color3.new(1,1,1)
+    knob.BorderSizePixel= 0
+    Instance.new("UICorner",knob).CornerRadius = UDim.new(1,0)
+
+    local state = Flags[flag] or false
+
+    local function setState(v)
+        state = v
+        if flag then Flags[flag] = v end
+        if v then
+            tween(pill,{BackgroundColor3=C.TOGGLE_ON},0.2)
+            tween(knob,{Position=UDim2.new(1,-21,0.5,-9)},0.2,Enum.EasingStyle.Back)
+            tween(s,{Color=C.ACCENT,Transparency=0},0.2)
+        else
+            tween(pill,{BackgroundColor3=C.TOGGLE_OFF},0.2)
+            tween(knob,{Position=UDim2.new(0,3,0.5,-9)},0.2,Enum.EasingStyle.Back)
+            tween(s,{Color=C.STROKE,Transparency=0.6},0.2)
+        end
+        if callback then callback(v) end
+    end
+
+    local btn = Instance.new("TextButton", card)
+    btn.Size            = UDim2.new(1,0,1,0)
+    btn.BackgroundTransparency = 1
+    btn.Text            = ""
+    btn.AutoButtonColor = false
+    btn.MouseButton1Click:Connect(function() setState(not state) end)
+    btn.MouseEnter:Connect(function() tween(card,{BackgroundColor3=Color3.fromRGB(32,24,60)},0.1) end)
+    btn.MouseLeave:Connect(function() tween(card,{BackgroundColor3=C.CARD},0.1) end)
+
+    setState(state)
+    return setState
+end
+
+local function Dropdown(page, title, options, flag, callback)
+    local card = Instance.new("Frame", page)
+    card.Size           = UDim2.new(1,-16,0,54)
+    card.BackgroundColor3 = C.CARD
+    card.BorderSizePixel= 0
+    card.ClipsDescendants = false
+    Instance.new("UICorner",card).CornerRadius = UDim.new(0,10)
+    Instance.new("UIStroke",card).Color = C.STROKE
+
+    local lbl = Instance.new("TextLabel", card)
+    lbl.Size            = UDim2.new(1,-16,0,20)
+    lbl.Position        = UDim2.new(0,14,0,6)
+    lbl.BackgroundTransparency = 1
+    lbl.Text            = title
+    lbl.Font            = Enum.Font.GothamSemibold
+    lbl.TextSize        = 13
+    lbl.TextColor3      = C.TEXT
+    lbl.TextXAlignment  = Enum.TextXAlignment.Left
+
+    local selected = Flags[flag] or options[1]
+    local selLbl = Instance.new("TextButton", card)
+    selLbl.Size         = UDim2.new(1,-28,0,22)
+    selLbl.Position     = UDim2.new(0,14,0,28)
+    selLbl.BackgroundColor3 = C.ACCENT_DIM
+    selLbl.Text         = "▾  " .. selected
+    selLbl.Font         = Enum.Font.Gotham
+    selLbl.TextSize     = 12
+    selLbl.TextColor3   = C.TEXT
+    selLbl.AutoButtonColor = false
+    selLbl.TextXAlignment = Enum.TextXAlignment.Left
+    Instance.new("UICorner",selLbl).CornerRadius = UDim.new(0,6)
+    Instance.new("UIPadding",selLbl).PaddingLeft = UDim.new(0,8)
+
+    local menu = Instance.new("Frame", card)
+    menu.Size           = UDim2.new(1,0,0,0)
+    menu.Position       = UDim2.new(0,0,1,4)
+    menu.BackgroundColor3 = C.PANEL
+    menu.BorderSizePixel= 0
+    menu.ZIndex         = 10
+    menu.ClipsDescendants = true
+    menu.Visible        = false
+    Instance.new("UICorner",menu).CornerRadius = UDim.new(0,8)
+    Instance.new("UIStroke",menu).Color = C.ACCENT
+
+    local menuList = Instance.new("UIListLayout", menu)
+    menuList.Padding    = UDim.new(0,2)
+    Instance.new("UIPadding",menu).PaddingTop = UDim.new(0,4)
+    Instance.new("UIPadding",menu).PaddingBottom = UDim.new(0,4)
+
+    local totalH = #options * 28 + 8
+    local open = false
+
+    for _, opt in ipairs(options) do
+        local ob = Instance.new("TextButton", menu)
+        ob.Size             = UDim2.new(1,-8,0,26)
+        ob.Position         = UDim2.new(0,4,0,0)
+        ob.BackgroundColor3 = opt == selected and C.ACCENT_DIM or C.PANEL
+        ob.Text             = opt
+        ob.Font             = Enum.Font.Gotham
+        ob.TextSize         = 12
+        ob.TextColor3       = opt == selected and C.TEXT or C.TEXT_DIM
+        ob.AutoButtonColor  = false
+        Instance.new("UICorner",ob).CornerRadius = UDim.new(0,6)
+
+        ob.MouseEnter:Connect(function() tween(ob,{BackgroundColor3=C.ACCENT_DIM,TextColor3=C.TEXT},0.1) end)
+        ob.MouseLeave:Connect(function()
+            tween(ob,{BackgroundColor3=(Flags[flag]==opt and C.ACCENT_DIM or C.PANEL),TextColor3=(Flags[flag]==opt and C.TEXT or C.TEXT_DIM)},0.1)
+        end)
+        ob.MouseButton1Click:Connect(function()
+            selected = opt
+            if flag then Flags[flag] = opt end
+            selLbl.Text = "▾  " .. opt
+            if callback then callback(opt) end
+            tween(menu,{Size=UDim2.new(1,0,0,0)},0.2,Enum.EasingStyle.Quint)
+            task.delay(0.22,function() menu.Visible = false end)
+            open = false
+        end)
+    end
+
+    selLbl.MouseButton1Click:Connect(function()
+        open = not open
+        menu.Visible = open
+        if open then
+            tween(menu,{Size=UDim2.new(1,0,0,totalH)},0.2,Enum.EasingStyle.Quint)
+        else
+            tween(menu,{Size=UDim2.new(1,0,0,0)},0.15,Enum.EasingStyle.Quint)
+            task.delay(0.2,function() if not open then menu.Visible = false end end)
+        end
+    end)
+
+    return card
+end
+
+local function Slider(page, title, min, max, default, flag, callback)
+    local card = Instance.new("Frame", page)
+    card.Size           = UDim2.new(1,-16,0,64)
+    card.BackgroundColor3 = C.CARD
+    card.BorderSizePixel= 0
+    Instance.new("UICorner",card).CornerRadius = UDim.new(0,10)
+    Instance.new("UIStroke",card).Color = C.STROKE
+
+    local lbl = Instance.new("TextLabel", card)
+    lbl.Size            = UDim2.new(1,-60,0,20)
+    lbl.Position        = UDim2.new(0,14,0,6)
+    lbl.BackgroundTransparency = 1
+    lbl.Text            = title
+    lbl.Font            = Enum.Font.GothamSemibold
+    lbl.TextSize        = 13
+    lbl.TextColor3      = C.TEXT
+    lbl.TextXAlignment  = Enum.TextXAlignment.Left
+
+    local valLbl = Instance.new("TextLabel", card)
+    valLbl.Size         = UDim2.new(0,50,0,20)
+    valLbl.Position     = UDim2.new(1,-64,0,6)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Font         = Enum.Font.GothamBold
+    valLbl.TextSize     = 13
+    valLbl.TextColor3   = C.ACCENT2
+    valLbl.TextXAlignment = Enum.TextXAlignment.Right
+
+    local track = Instance.new("Frame", card)
+    track.Size          = UDim2.new(1,-28,0,6)
+    track.Position      = UDim2.new(0,14,0,44)
+    track.BackgroundColor3 = C.TOGGLE_OFF
+    track.BorderSizePixel = 0
+    Instance.new("UICorner",track).CornerRadius = UDim.new(1,0)
+
+    local fill = Instance.new("Frame", track)
+    fill.Size           = UDim2.new(0,0,1,0)
+    fill.BackgroundColor3 = C.ACCENT
+    fill.BorderSizePixel= 0
+    Instance.new("UICorner",fill).CornerRadius = UDim.new(1,0)
+
+    local knob = Instance.new("Frame", track)
+    knob.Size           = UDim2.fromOffset(14,14)
+    knob.AnchorPoint    = Vector2.new(0.5,0.5)
+    knob.BackgroundColor3 = Color3.new(1,1,1)
+    knob.BorderSizePixel= 0
+    knob.Position       = UDim2.new(0,0,0.5,0)
+    Instance.new("UICorner",knob).CornerRadius = UDim.new(1,0)
+
+    local value = default or min
+    if flag then Flags[flag] = value end
+
+    local function setValue(v)
+        v = math.clamp(math.floor(v), min, max)
+        value = v
+        if flag then Flags[flag] = v end
+        local pct = (v - min) / (max - min)
+        tween(fill,{Size=UDim2.new(pct,0,1,0)},0.1)
+        tween(knob,{Position=UDim2.new(pct,0,0.5,0)},0.1)
+        valLbl.Text = tostring(v)
+        if callback then callback(v) end
+    end
+
+    setValue(value)
+
+    local dragging = false
+    local btn = Instance.new("TextButton", card)
+    btn.Size            = UDim2.new(1,0,1,0)
+    btn.BackgroundTransparency = 1
+    btn.Text            = ""
+    btn.AutoButtonColor = false
+
+    local function onInput(input)
+        if dragging then
+            local rel   = (input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X
+            local newV  = min + (max - min) * math.clamp(rel,0,1)
+            setValue(newV)
+        end
+    end
+
+    btn.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            onInput(i)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end)
+    UserInputService.InputChanged:Connect(onInput)
+
+    return setValue
+end
+
+-- ─────────────────────────────────────────────
+--  NOTIFICATION SYSTEM
+-- ─────────────────────────────────────────────
+local NotifFrame = Instance.new("Frame", ScreenGui)
+NotifFrame.Size             = UDim2.fromOffset(300,0)
+NotifFrame.Position         = UDim2.new(1,-310,0,10)
+NotifFrame.BackgroundTransparency = 1
+NotifFrame.AutomaticSize    = Enum.AutomaticSize.Y
+local NotifLayout = Instance.new("UIListLayout", NotifFrame)
+NotifLayout.Padding         = UDim.new(0,6)
+NotifLayout.SortOrder       = Enum.SortOrder.LayoutOrder
+
+local function Notify(title, msg, ntype, dur)
+    local col = ntype == "success" and C.GREEN or ntype == "error" and C.RED or C.ACCENT
+    local n = Instance.new("Frame", NotifFrame)
+    n.Size              = UDim2.new(1,0,0,60)
+    n.BackgroundColor3  = C.PANEL
+    n.BorderSizePixel   = 0
+    n.Position          = UDim2.new(1.2,0,0,0)
+    Instance.new("UICorner",n).CornerRadius = UDim.new(0,10)
+    local ns = Instance.new("UIStroke",n)
+    ns.Color = col; ns.Thickness = 1.5
+
+    local bar = Instance.new("Frame", n)
+    bar.Size            = UDim2.new(0,4,1,0)
+    bar.BackgroundColor3= col
+    bar.BorderSizePixel = 0
+    Instance.new("UICorner",bar).CornerRadius = UDim.new(1,0)
+
+    local t = Instance.new("TextLabel", n)
+    t.Size              = UDim2.new(1,-20,0,20)
+    t.Position          = UDim2.new(0,14,0,8)
+    t.BackgroundTransparency = 1
+    t.Text              = title
+    t.Font              = Enum.Font.GothamBold
+    t.TextSize          = 13
+    t.TextColor3        = col
+    t.TextXAlignment    = Enum.TextXAlignment.Left
+
+    local b = Instance.new("TextLabel", n)
+    b.Size              = UDim2.new(1,-20,0,20)
+    b.Position          = UDim2.new(0,14,0,30)
+    b.BackgroundTransparency = 1
+    b.Text              = msg
+    b.Font              = Enum.Font.Gotham
+    b.TextSize          = 11
+    b.TextColor3        = C.TEXT_DIM
+    b.TextXAlignment    = Enum.TextXAlignment.Left
+
+    tween(n,{Position=UDim2.new(0,0,0,0)},0.4,Enum.EasingStyle.Back)
+    task.delay(dur or 4,function()
+        tween(n,{Position=UDim2.new(1.2,0,0,0),BackgroundTransparency=1},0.3)
+        task.delay(0.35,function() n:Destroy() end)
+    end)
+end
+
+-- ─────────────────────────────────────────────
+--  BUILD TABS
+-- ─────────────────────────────────────────────
+local AutoParryPage = CreateTab("Auto Parry",   "⚔")
+local AutoSpamPage  = CreateTab("Auto Spam",    "⚡")
+local MovementPage  = CreateTab("Movement",     "🏃")
+local VisualsPage   = CreateTab("Visuals",      "👁")
+local MiscPage      = CreateTab("Misc",         "⚙")
+
+-- Activate first tab
+tabList[1].MouseButton1Click:Fire()
+
+-- ─────────────────────────────────────────────
+--  AUTO PARRY ENGINE
+-- ─────────────────────────────────────────────
+local ParryRemotes    = {}
+local LastInput       = Enum.UserInputType.MouseButton1
+local isMobile        = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+local Parries         = 0
+local Phantom         = false
+local ClashEndTime    = 0
+local DeathSlash      = false
+local InfinityBall    = false
+local PingHistory     = {}
+local selectedTarget  = nil
+local Closest_Entity  = nil
+local ParryCD         = nil -- UIGradient reference for cooldown
+
+-- Ping util
+local function GetPing()
+    local ok, v = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    return ok and v or 60
+end
+
+local function GetAveragePing()
+    table.insert(PingHistory, GetPing())
+    if #PingHistory > 10 then table.remove(PingHistory, 1) end
+    local s = 0
+    for _, v in ipairs(PingHistory) do s = s + v end
+    return s / #PingHistory
+end
+
+-- Ball detection
+local AP = {}
+
+AP.GetBall = function()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+
+    local best, bestDist = nil, math.huge
+    -- Check workspace.Balls or any Part with "zoomies" LinearVelocity
+    local containers = {"Balls", "Active", "Map"}
+    for _, cname in ipairs(containers) do
+        local cont = Workspace:FindFirstChild(cname)
+        if cont then
+            for _, obj in ipairs(cont:GetChildren()) do
+                if obj:IsA("BasePart") and obj:FindFirstChild("zoomies") then
+                    local d = (root.Position - obj.Position).Magnitude
+                    if d < bestDist then bestDist = d; best = obj end
+                end
+            end
+        end
+    end
+    -- Fallback: any descendant with zoomies
+    if not best then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("LinearVelocity") and obj.Name == "zoomies" and obj.Parent and obj.Parent:IsA("BasePart") then
+                local d = (root.Position - obj.Parent.Position).Magnitude
+                if d < bestDist then bestDist = d; best = obj.Parent end
+            end
+        end
+    end
+    return best
+end
+
+-- Velocity history for curve detection
+AP.VelHistory = {}
+AP.DotHistory  = {}
+
+AP.IsCurved = function(ball)
+    if not Flags.CurvedDetect then return false end
+    local char = LocalPlayer.Character
+    if not char or not char.PrimaryPart then return false end
+    local zoomies = ball:FindFirstChild("zoomies")
+    if not zoomies then return false end
+
+    local vel = zoomies.VectorVelocity
+    local speed = vel.Magnitude
+    if speed < 50 then return false end
+
+    local dir      = (char.PrimaryPart.Position - ball.Position).Unit
+    local ballDir  = vel.Unit
+    local dot      = dir:Dot(ballDir)
+    local dist     = (char.PrimaryPart.Position - ball.Position).Magnitude
+
+    if not AP.VelHistory[ball] then AP.VelHistory[ball] = {} end
+    if not AP.DotHistory[ball]  then AP.DotHistory[ball]  = {} end
+
+    table.insert(AP.VelHistory[ball], vel)
+    table.insert(AP.DotHistory[ball], dot)
+    if #AP.VelHistory[ball] > 8  then table.remove(AP.VelHistory[ball], 1) end
+    if #AP.DotHistory[ball]  > 8  then table.remove(AP.DotHistory[ball],  1) end
+
+    -- Backwards curve
+    local horizDir   = Vector3.new(dir.X, 0, dir.Z)
+    local horizBall  = Vector3.new(ballDir.X, 0, ballDir.Z)
+    local backCurve  = false
+    if horizDir.Magnitude > 0 and horizBall.Magnitude > 0 then
+        local angle = math.deg(math.acos(math.clamp((-horizDir.Unit):Dot(horizBall.Unit),-1,1)))
+        backCurve   = angle < 40 and dist > 30
+    end
+
+    -- Direction change
+    local dirChanged = false
+    if #AP.VelHistory[ball] >= 4 then
+        local prev = AP.VelHistory[ball][#AP.VelHistory[ball]-1]
+        if prev.Magnitude > 100 then
+            local chg = prev.Unit:Dot(vel.Unit)
+            dirChanged = chg < 0.78
+        end
+    end
+
+    -- Variance
+    local variance, sigVar = 0, false
+    if #AP.DotHistory[ball] >= 5 then
+        local hist = AP.DotHistory[ball]
+        for i = 2, #hist do variance = variance + math.abs(hist[i] - hist[i-1]) end
+        variance = variance / (#hist - 1)
+        sigVar   = variance > 0.08
+    end
+
+    local score = (dot < 0.5 and 1 or 0) + (backCurve and 3 or 0) + (dirChanged and 1 or 0) + (sigVar and 1 or 0)
+    return score >= 3 or backCurve
+end
+
+-- Parry data
+AP.ParryData = function(ptype)
+    local char = LocalPlayer.Character
+    if not char or not char.PrimaryPart then return nil end
+
+    local events    = {}
+    local cam       = Camera
+    local mouseLoc
+
+    if isMobile then
+        mouseLoc = {cam.ViewportSize.X/2, cam.ViewportSize.Y/2}
+    else
+        local ml = UserInputService:GetMouseLocation()
+        mouseLoc = {ml.X, ml.Y}
+    end
+
+    local aliveCont = Workspace:FindFirstChild("Alive")
+    if aliveCont then
+        for _, v in ipairs(aliveCont:GetChildren()) do
+            if v ~= char then
+                local ok, sp = pcall(function()
+                    return cam:WorldToScreenPoint(v.PrimaryPart.Position)
+                end)
+                if ok then events[tostring(v)] = sp end
+            end
+        end
+    end
+
+    if ptype == "Camera" then
+        return {0, cam.CFrame, events, mouseLoc}
+
+    elseif ptype == "Backwards" then
+        local v = cam.CFrame.LookVector * -10000
+        v = Vector3.new(v.X, 0, v.Z)
+        return {0, CFrame.new(cam.CFrame.Position, cam.CFrame.Position + v), events, mouseLoc}
+
+    elseif ptype == "Straight" then
+        local mouseVec = Vector2.new(mouseLoc[1], mouseLoc[2])
+        local aimed, closest = nil, math.huge
+        if aliveCont then
+            for _, v in ipairs(aliveCont:GetChildren()) do
+                if v ~= char then
+                    local sp, onScreen = cam:WorldToScreenPoint(v.PrimaryPart.Position)
+                    if onScreen then
+                        local d = (mouseVec - Vector2.new(sp.X, sp.Y)).Magnitude
+                        if d < closest then closest = d; aimed = v end
+                    end
+                end
+            end
+        end
+        local target = aimed or Closest_Entity
+        if target then
+            return {0, CFrame.new(char.PrimaryPart.Position, target.PrimaryPart.Position), events, mouseLoc}
+        end
+        return {0, cam.CFrame, events, mouseLoc}
+
+    elseif ptype == "High" then
+        return {0, CFrame.new(cam.CFrame.Position, cam.CFrame.Position + cam.CFrame.UpVector*10000), events, mouseLoc}
+
+    elseif ptype == "Left" then
+        return {0, CFrame.new(cam.CFrame.Position, cam.CFrame.Position - cam.CFrame.RightVector*10000), events, mouseLoc}
+
+    elseif ptype == "Right" then
+        return {0, CFrame.new(cam.CFrame.Position, cam.CFrame.Position + cam.CFrame.RightVector*10000), events, mouseLoc}
+
+    elseif ptype == "Random" then
+        local dirs = {"Backwards","Left","Right","High","Camera"}
+        return AP.ParryData(dirs[math.random(#dirs)])
+    end
+
+    return {0, cam.CFrame, events, mouseLoc}
+end
+
+-- Simulate click (keypress mode)
+local function SimParry()
+    if isMobile then
+        pcall(mouse1click)
+    else
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(0,0,0,true,game,0)
+            task.wait()
+            VirtualInputManager:SendMouseButtonEvent(0,0,0,false,game,0)
+        end)
+    end
+end
+
+-- Execute parry
+AP.Parry = function(ptype)
+    local pdata = AP.ParryData(ptype or Flags.AutoParryDir)
+    if not pdata then return end
+
+    local hasRemote = false
+    for remote, origArgs in pairs(ParryRemotes) do
+        hasRemote = true
+        local mArgs = {origArgs[1], origArgs[2], 0, pdata[2], pdata[3], pdata[4]}
+        pcall(function()
+            if remote:IsA("RemoteEvent") then
+                remote:FireServer(table.unpack(mArgs))
+            elseif remote:IsA("RemoteFunction") then
+                remote:InvokeServer(table.unpack(mArgs))
+            end
+        end)
+    end
+
+    if not hasRemote or Flags.AutoParryType == "Keypress" then
+        -- Keypress cam manipulation
+        local cam       = Camera
+        local orig      = cam.CFrame
+        local target    = pdata[2] * CFrame.Angles(math.rad(math.random(-4,4)), math.rad(math.random(-4,4)), 0)
+        local dur       = 0.10 + math.random(-8,8)/1000
+        local startT    = tick()
+        local conn
+        conn = RunService.Heartbeat:Connect(function()
+            local el = tick() - startT
+            if el >= dur then
+                conn:Disconnect()
+                SimParry()
+                task.delay(0.23, function()
+                    local backStart = tick()
+                    local backDur   = 0.12
+                    local bc
+                    bc = RunService.Heartbeat:Connect(function()
+                        local be = tick() - backStart
+                        if be >= backDur then bc:Disconnect(); return end
+                        cam.CFrame = target:Lerp(orig, 1-(1-(be/backDur))^2)
+                    end)
+                end)
+                return
+            end
+            cam.CFrame = orig:Lerp(target, (el/dur)^2)
+        end)
+    end
+
+    if Parries < 8 then
+        Parries = Parries + 1
+        task.delay(0.5, function() if Parries > 0 then Parries -= 1 end end)
+    end
+end
+
+-- ─────────────────────────────────────────────
+--  __namecall HOOK  — capture parry remote
+-- ─────────────────────────────────────────────
+local hookedNamecall
+hookedNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    if (method == "FireServer" or method == "InvokeServer") and
+       (self.Name:lower():find("plr") or self.Name:lower():find("input") or
+        self.Name:lower():find("parr") or self.Name:lower():find("skill") or
+        self.Name:lower():find("ability")) then
+        local args = {...}
+        -- Capture if it looks like a parry call (has CFrame argument)
+        for _, v in ipairs(args) do
+            if typeof(v) == "CFrame" then
+                if not ParryRemotes[self] then
+                    ParryRemotes[self] = args
+                    Notify("Remote Captured", self:GetFullName(), "success", 3)
+                else
+                    ParryRemotes[self] = args
+                end
+                break
+            end
+        end
+    end
+    return hookedNamecall(self, ...)
+end)
+
+-- Also try static known remote
+pcall(function()
+    local rem = ReplicatedStorage:WaitForChild("Remotes",3):FindFirstChild("PlrInput")
+    if rem then
+        ParryRemotes[rem] = {"UseAbility"}
+    end
+end)
+
+-- ─────────────────────────────────────────────
+--  AUTO SPAM
+-- ─────────────────────────────────────────────
+local IsAutoSpamming = false
+
+AP.SpamValue = function()
+    local ball = AP.GetBall()
+    if not ball then return 0 end
+    local char = LocalPlayer.Character
+    if not char or not char.PrimaryPart then return 0 end
+    local zoomies = ball:FindFirstChild("zoomies")
+    if not zoomies then return 0 end
+
+    local vel   = zoomies.VectorVelocity
+    local speed = vel.Magnitude
+    local dir   = (char.PrimaryPart.Position - ball.Position).Unit
+    local dot   = dir:Dot(vel.Unit)
+    local dist  = (char.PrimaryPart.Position - ball.Position).Magnitude
+    local ping  = GetAveragePing()
+
+    if dot < 0 then return 0 end  -- ball going away
+
+    local pingAdj  = ping / 10
+    local maxSpam  = pingAdj + math.min(speed/4, 200)
+    if dist > maxSpam then return 0 end
+
+    return maxSpam - math.clamp(dot,-1,0) * (5 - math.min(speed/5,5))
+end
+
+-- ─────────────────────────────────────────────
+--  VISUALIZER SPHERE
+-- ─────────────────────────────────────────────
+local VizPart = Instance.new("Part", Workspace)
+VizPart.Name          = "SkylerViz"
+VizPart.Shape         = Enum.PartType.Ball
+VizPart.Anchored      = true
+VizPart.CanCollide    = false
+VizPart.Material      = Enum.Material.ForceField
+VizPart.Transparency  = 0.55
+VizPart.Color         = C.ACCENT
+VizPart.Size          = Vector3.new(0,0,0)
+VizPart.CastShadow    = false
+
+-- ─────────────────────────────────────────────
+--  MAIN LOOP
+-- ─────────────────────────────────────────────
+local LastParry   = 0
+local MinDelay    = 1/5   -- max 5 parries/sec
+local SpamCoroutine = nil
+
+RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    if not char or not char.PrimaryPart then return end
+
+    local ball    = AP.GetBall()
+    local now     = tick()
+    local ping    = GetAveragePing()
+
+    -- Auto Parry
+    if Flags.AutoParry and ball then
+        local zoomies = ball:FindFirstChild("zoomies")
+        if zoomies then
+            local vel   = zoomies.VectorVelocity
+            local speed = vel.Magnitude
+            local dist  = (char.PrimaryPart.Position - ball.Position).Magnitude
+            local dir   = (char.PrimaryPart.Position - ball.Position).Unit
+            local dot   = dir:Dot(vel.Unit)
+
+            -- Ping compensation
+            local pingComp = Flags.PingCompensation and (ping / 1000) or 0
+            local parryDist = math.clamp(speed * (0.05 + pingComp), 5, 60)
+
+            local curved   = AP.IsCurved(ball)
+            local ptype    = Flags.AutoParryDir
+            if curved then ptype = "Camera" end
+
+            if dot > 0.4 and dist < parryDist and Parries < 8 then
+                if now - LastParry >= MinDelay then
+                    LastParry = now
+                    task.spawn(function() AP.Parry(ptype) end)
+                end
+            end
+        end
+    end
+
+    -- Auto Spam
+    if Flags.AutoSpam then
+        local sv = AP.SpamValue()
+        if sv > 0 then
+            if not IsAutoSpamming then
+                IsAutoSpamming = true
+                SpamCoroutine = task.spawn(function()
+                    while Flags.AutoSpam and IsAutoSpamming do
+                        if AP.SpamValue() > 0 then
+                            if Flags.AutoSpamType == "Remote" then
+                                AP.Parry(Flags.AutoParryDir)
+                            else
+                                SimParry()
+                            end
+                        end
+                        task.wait(0.05)
+                    end
+                    IsAutoSpamming = false
+                end)
+            end
+        else
+            IsAutoSpamming = false
+        end
+    else
+        IsAutoSpamming = false
+    end
+
+    -- Visualizer
+    if Flags.Visualizer then
+        if ball then
+            local vel     = ball.Velocity.Magnitude
+            local radius  = math.clamp(vel/2.4 + 10, 15, 50)
+            VizPart.Size  = Vector3.new(radius, radius, radius)
+            VizPart.CFrame= char.PrimaryPart.CFrame
+            VizPart.Color = IsAutoSpamming and C.RED or C.ACCENT
+        else
+            VizPart.Size  = Vector3.new(0,0,0)
+        end
+    else
+        VizPart.Size = Vector3.new(0,0,0)
+    end
+end)
+
+-- Anti-Phantom
+RunService.PreSimulation:Connect(function()
+    if not Flags.AntiPhantom then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local attr = char:GetAttribute("Parrying")
+    if Phantom and attr then
+        local ball = AP.GetBall()
+        local hum  = char:FindFirstChildOfClass("Humanoid")
+        if hum and ball then
+            hum.WalkSpeed = 36
+            hum:MoveTo(ball.Position)
+        end
+    end
+end)
+
+-- Known remote events
+pcall(function()
+    ReplicatedStorage.Remotes.Phantom.OnClientEvent:Connect(function(_, b)
+        if b and b.Name == tostring(LocalPlayer) then
+            Phantom = true
+        else
+            Phantom = false
+        end
+    end)
+end)
+
+pcall(function()
+    ReplicatedStorage.Remotes.DeathBall.OnClientEvent:Connect(function(v) DeathSlash = v end)
+end)
+
+-- ─────────────────────────────────────────────
+--  POPULATE AUTO PARRY PAGE
+-- ─────────────────────────────────────────────
+Section(AutoParryPage, "Core")
+
+Toggle(AutoParryPage, "Auto Parry", "Automatically parry incoming balls", "AutoParry", function(v)
+    Notify("Auto Parry", v and "Enabled" or "Disabled", v and "success" or "error", 2)
+end)
+
+Dropdown(AutoParryPage, "Parry Mode", {"Remote","Keypress"}, "AutoParryType", function(v)
+    Notify("Parry Mode", "Set to " .. v, "info", 2)
+end)
+
+Dropdown(AutoParryPage, "Parry Direction", {"Camera","Straight","Backwards","High","Left","Right","Random"}, "AutoParryDir", nil)
+
+Section(AutoParryPage, "Advanced")
+
+Toggle(AutoParryPage, "Ping Compensation", "Adjust parry timing based on your ping", "PingCompensation", nil)
+
+Toggle(AutoParryPage, "Curved Ball Detection", "Detect curved balls and adjust direction", "CurvedDetect", nil)
+
+Toggle(AutoParryPage, "Anti-Phantom", "Chase ball while phantom is active", "AntiPhantom", nil)
+
+Toggle(AutoParryPage, "Parry Visualizer", "Show parry range sphere", "Visualizer", function(v)
+    if not v then VizPart.Size = Vector3.new(0,0,0) end
+end)
+
+-- ─────────────────────────────────────────────
+--  POPULATE AUTO SPAM PAGE
+-- ─────────────────────────────────────────────
+Section(AutoSpamPage, "Auto Spam")
+
+Toggle(AutoSpamPage, "Auto Spam", "Spam parry when ball is close", "AutoSpam", function(v)
+    Notify("Auto Spam", v and "Enabled" or "Disabled", v and "success" or "error", 2)
+end)
+
+Dropdown(AutoSpamPage, "Spam Mode", {"Remote","Keypress"}, "AutoSpamType", nil)
+
+-- ─────────────────────────────────────────────
+--  POPULATE MOVEMENT PAGE
+-- ─────────────────────────────────────────────
+Section(MovementPage, "Ball Chaser AI")
+
+local AIRunning  = false
+local AIConn     = nil
+
+Toggle(MovementPage, "Ball Chaser", "Automatically move away from the ball", "BallChaser", function(v)
+    if v then
+        AIConn = RunService.Heartbeat:Connect(function()
+            local char = LocalPlayer.Character
+            if not char then return end
+            local ball = AP.GetBall()
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local hum  = char:FindFirstChildOfClass("Humanoid")
+            if not ball or not root or not hum then return end
+
+            local awayDir  = (root.Position - ball.Position).Unit
+            local floor    = Workspace:FindFirstChild("FLOOR") or Workspace.Terrain
+            local targetY  = floor and (floor:IsA("BasePart") and floor.Position.Y + 5 or root.Position.Y) or root.Position.Y
+            local speed    = ball.Velocity.Magnitude
+            local gap      = 35 + math.min(speed/4, 120)
+            local dest     = root.Position + awayDir * gap
+            dest = Vector3.new(dest.X, targetY, dest.Z)
+            hum:MoveTo(dest)
+        end)
+        Notify("Ball Chaser", "AI movement active", "success", 2)
+    else
+        if AIConn then AIConn:Disconnect(); AIConn = nil end
+        Notify("Ball Chaser", "AI movement stopped", "error", 2)
+    end
+end)
+
+-- ─────────────────────────────────────────────
+--  POPULATE VISUALS PAGE
+-- ─────────────────────────────────────────────
+Section(VisualsPage, "Lighting")
+
+local OrigLight = {}
+Toggle(VisualsPage, "Fullbright", "Maximum ambient lighting", "Fullbright", function(v)
+    local light = game:GetService("Lighting")
+    if v then
+        OrigLight = {Ambient = light.Ambient, Brightness = light.Brightness}
+        light.Ambient    = Color3.new(1,1,1)
+        light.Brightness = 2
+    else
+        if OrigLight.Ambient then light.Ambient = OrigLight.Ambient end
+        if OrigLight.Brightness then light.Brightness = OrigLight.Brightness end
+    end
+end)
+
+Slider(VisualsPage, "FOV", 70, 130, 70, nil, function(v)
+    Camera.FieldOfView = v
+end)
+
+-- ─────────────────────────────────────────────
+--  POPULATE MISC PAGE
+-- ─────────────────────────────────────────────
+Section(MiscPage, "Character")
+
+local OrigFace = nil
+local HeadConn = nil
+
+Toggle(MiscPage, "Headless (Local)", "Make your head invisible locally", "Headless", function(v)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if not head then return end
+    if v then
+        local face = head:FindFirstChild("face")
+        if face and face:IsA("Decal") then OrigFace = face.Texture end
+        head.Transparency = 1
+        for _, c in ipairs(head:GetChildren()) do
+            if c:IsA("Decal") then c:Destroy() end
+        end
+        HeadConn = head.ChildAdded:Connect(function(c)
+            if c:IsA("Decal") then task.defer(function() c:Destroy() end) end
+        end)
+    else
+        head.Transparency = 0
+        if OrigFace then
+            local d = Instance.new("Decal", head)
+            d.Name    = "face"
+            d.Texture = OrigFace
+        end
+        if HeadConn then HeadConn:Disconnect(); HeadConn = nil end
+    end
+end)
+
+local KorbloxConn = nil
+
+Toggle(MiscPage, "Korblox (Local)", "Replace right leg with Korblox", "Korblox", function(v)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local rLeg = char:FindFirstChild("Right Leg")
+    if not rLeg then return end
+    if v then
+        rLeg.Transparency = 1; rLeg.CanCollide = false
+        local kPart = Instance.new("Part", char)
+        kPart.Name = "KorbloxLeg"
+        kPart.Size = rLeg.Size
+        kPart.Anchored  = true
+        kPart.CanCollide= false
+        local mesh = Instance.new("SpecialMesh", kPart)
+        mesh.MeshId    = "http://www.roblox.com/asset/?id=12917863813"
+        mesh.TextureId = "http://roblox.com/asset/?id=12917863954"
+        mesh.Scale     = Vector3.new(1.5,1.5,1.5)
+        KorbloxConn = RunService.Heartbeat:Connect(function()
+            if rLeg and kPart then
+                kPart.CFrame = rLeg.CFrame * CFrame.Angles(0, math.rad(180), 0) * CFrame.new(0,0.5,0)
+            else
+                KorbloxConn:Disconnect()
+            end
+        end)
+    else
+        if KorbloxConn then KorbloxConn:Disconnect(); KorbloxConn = nil end
+        rLeg.Transparency = 0; rLeg.CanCollide = true
+        local kp = char:FindFirstChild("KorbloxLeg")
+        if kp then kp:Destroy() end
+    end
+end)
+
+Section(MiscPage, "Interface")
+
+Toggle(MiscPage, "UI Visible  [RShift]", "Toggle the hub visibility", nil, function(v)
+    ScreenGui.Enabled = v
+end)
+
+-- Hotkey: RShift toggles UI
+UserInputService.InputBegan:Connect(function(inp, gpe)
+    if gpe then return end
+    if inp.KeyCode == Enum.KeyCode.RightShift then
+        ScreenGui.Enabled = not ScreenGui.Enabled
+        if ScreenGui.Enabled then
+            tween(Main,{Size=UDim2.fromOffset(640,440)},0.4,Enum.EasingStyle.Back)
+        end
+    end
+end)
+
+-- ─────────────────────────────────────────────
+--  ANIMATED OPEN
+-- ─────────────────────────────────────────────
+Main.Size    = UDim2.fromOffset(640,0)
+Main.Position= UDim2.new(0.5,-320,0.5,0)
+tween(Main, {
+    Size     = UDim2.fromOffset(640,440),
+    Position = UDim2.new(0.5,-320,0.5,-220)
+}, 0.5, Enum.EasingStyle.Back)
+
+task.delay(0.6, function()
+    Notify("SKYLER HUB", "Loaded successfully · Script by Skyler", "success", 4)
+    task.delay(0.3, function()
+        Notify("Tip", "Press RShift to toggle the UI", "info", 4)
+    end)
+end)
+
+-- ─────────────────────────────────────────────
+--  CLEANUP ON PLAYER LEAVE
+-- ─────────────────────────────────────────────
+LocalPlayer.AncestryChanged:Connect(function()
+    pcall(function() ScreenGui:Destroy() end)
+    pcall(function() VizPart:Destroy() end)
+end)
