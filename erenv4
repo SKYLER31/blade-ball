@@ -19,7 +19,20 @@
 ]]
 
 -- ─────────────────────────────────────────────
---  SERVICES  (cloneref safe wrap)
+--  COMPAT SHIMS  (task, cloneref, etc.)
+-- ─────────────────────────────────────────────
+-- task library fallback for older executors
+if not task then
+    task = {
+        spawn = function(f,...) return coroutine.wrap(f)(...) end,
+        defer = function(f,...) return coroutine.wrap(f)(...) end,
+        wait  = function(t) return wait(t or 0) end,
+        delay = function(t,f,...) return delay(t or 0,f,...) end,
+    }
+end
+
+-- ─────────────────────────────────────────────
+--  SERVICES  (all pcall-safe)
 -- ─────────────────────────────────────────────
 local function safeService(name)
     local ok, svc = pcall(function()
@@ -36,8 +49,11 @@ local TweenService        = safeService("TweenService")
 local ReplicatedStorage   = safeService("ReplicatedStorage")
 local CoreGui             = safeService("CoreGui")
 local ContextActionService= safeService("ContextActionService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
 local Workspace           = (cloneref and cloneref(workspace)) or workspace
+
+-- VirtualInputManager: pcall so it never crashes executor
+local VirtualInputManager = nil
+pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = Workspace.CurrentCamera
@@ -105,7 +121,7 @@ print("[SkylerHub] Loading...")
 pcall(function()
     for _, gui in ipairs({
         CoreGui:FindFirstChild("SkylerHub"),
-        LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("SkylerHub")
+        LocalPlayer.PlayerGui:FindFirstChild("SkylerHub")
     }) do
         if gui then gui:Destroy() end
     end
@@ -118,33 +134,14 @@ ScreenGui.DisplayOrder    = 999
 ScreenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
 ScreenGui.Enabled         = true
 
--- gethui() → protect_gui+CoreGui → CoreGui → PlayerGui
-local guiParented = false
-pcall(function()
-    if gethui then
-        ScreenGui.Parent = gethui()
-        guiParented = true
-    end
-end)
-if not guiParented then
-    pcall(function()
-        if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end
-        if protect_gui then protect_gui(ScreenGui) end
-        ScreenGui.Parent = CoreGui
-        guiParented = true
-    end)
-end
-if not guiParented then
-    pcall(function()
-        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui", 5)
-        guiParented = true
-    end)
-end
-
-if not guiParented then
-    warn("[SkylerHub] Could not parent ScreenGui!")
+-- Xeno: parent directly to CoreGui (no gethui needed)
+local ok = pcall(function() ScreenGui.Parent = CoreGui end)
+if not ok then
+    -- fallback: PlayerGui
+    ScreenGui.Parent = LocalPlayer.PlayerGui
+    print("[SkylerHub] Using PlayerGui")
 else
-    print("[SkylerHub] GUI parented OK")
+    print("[SkylerHub] Using CoreGui")
 end
 
 -- ─────────────────────────────────────────────
@@ -1083,17 +1080,21 @@ AP.ParryData = function(ptype)
     return {0, cam.CFrame, events, mouseLoc}
 end
 
--- Simulate click (keypress mode)
+-- Simulate click (Xeno compatible — no VirtualInputManager crash)
 local function SimParry()
-    if isMobile then
-        pcall(mouse1click)
-    else
-        pcall(function()
-            VirtualInputManager:SendMouseButtonEvent(0,0,0,true,game,0)
-            task.wait()
-            VirtualInputManager:SendMouseButtonEvent(0,0,0,false,game,0)
-        end)
-    end
+    pcall(function()
+        -- mouse1click = most compatible across executors including Xeno
+        if mouse1click then
+            mouse1click()
+        elseif keyclick then
+            keyclick(0x01)  -- left mouse button
+        elseif VirtualInputManager then
+            -- Last resort — wrapped so it can't crash executor
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true,  game, 0)
+            task.wait(0.01)
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+        end
+    end)
 end
 
 -- Execute parry
