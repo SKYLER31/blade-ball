@@ -773,19 +773,23 @@ local function GetAveragePing()
     return s / #PingHistory
 end
 
--- Ball detection
-local AP = {}
+-- Ball detection — CACHED (no GetDescendants every frame!)
+local AP         = {}
+local _ballCache = nil
+local _ballTime  = 0
+local _BALL_TTL  = 0.3  -- re-check at most every 0.3s
 
-AP.GetBall = function()
+local function _findBallNow()
     local char = LocalPlayer.Character
     if not char then return nil end
     local root = char:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
 
     local best, bestDist = nil, math.huge
-    -- Check workspace.Balls or any Part with "zoomies" LinearVelocity
-    local containers = {"Balls", "Active", "Map"}
-    for _, cname in ipairs(containers) do
+
+    -- Fast path: check known Blade Ball containers (GetChildren only)
+    local CONTAINERS = {"Balls", "Active", "Map", "BallFolder", "Runtime"}
+    for _, cname in ipairs(CONTAINERS) do
         local cont = Workspace:FindFirstChild(cname)
         if cont then
             for _, obj in ipairs(cont:GetChildren()) do
@@ -796,17 +800,39 @@ AP.GetBall = function()
             end
         end
     end
-    -- Fallback: any descendant with zoomies
+
+    -- Slow path: scan direct Workspace children only (NOT GetDescendants)
     if not best then
-        for _, obj in ipairs(Workspace:GetDescendants()) do
-            if obj:IsA("LinearVelocity") and obj.Name == "zoomies" and obj.Parent and obj.Parent:IsA("BasePart") then
-                local d = (root.Position - obj.Parent.Position).Magnitude
-                if d < bestDist then bestDist = d; best = obj.Parent end
+        for _, obj in ipairs(Workspace:GetChildren()) do
+            if obj:IsA("BasePart") and obj:FindFirstChild("zoomies") then
+                local d = (root.Position - obj.Position).Magnitude
+                if d < bestDist then bestDist = d; best = obj end
             end
         end
     end
+
     return best
 end
+
+AP.GetBall = function()
+    local now = tick()
+    -- Return cache if still valid and ball still exists
+    if _ballCache and _ballCache.Parent and (now - _ballTime) < _BALL_TTL then
+        return _ballCache
+    end
+    -- Cache miss: do a fresh search
+    _ballCache = _findBallNow()
+    _ballTime  = now
+    return _ballCache
+end
+
+-- Invalidate cache when workspace children change (ball appears/disappears)
+Workspace.ChildAdded:Connect(function(obj)
+    if obj:IsA("BasePart") then _ballCache = nil end
+end)
+Workspace.ChildRemoved:Connect(function(obj)
+    if obj == _ballCache then _ballCache = nil end
+end)
 
 -- Velocity history for curve detection
 AP.VelHistory = {}
