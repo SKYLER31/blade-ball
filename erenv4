@@ -100,13 +100,15 @@ local Flags = {
 -- ─────────────────────────────────────────────
 --  UI BOOT — destroy old + safe parent
 -- ─────────────────────────────────────────────
+print("[SkylerHub] Loading...")
+
 pcall(function()
-    local old = CoreGui:FindFirstChild("SkylerHub")
-    if old then old:Destroy() end
-end)
-pcall(function()
-    local old = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("SkylerHub")
-    if old then old:Destroy() end
+    for _, gui in ipairs({
+        CoreGui:FindFirstChild("SkylerHub"),
+        LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("SkylerHub")
+    }) do
+        if gui then gui:Destroy() end
+    end
 end)
 
 local ScreenGui = Instance.new("ScreenGui")
@@ -114,19 +116,35 @@ ScreenGui.Name            = "SkylerHub"
 ScreenGui.ResetOnSpawn    = false
 ScreenGui.DisplayOrder    = 999
 ScreenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+ScreenGui.Enabled         = true
 
--- protect_gui → CoreGui → PlayerGui fallback
-if syn and syn.protect_gui then
-    syn.protect_gui(ScreenGui)
-    ScreenGui.Parent = CoreGui
-elseif protect_gui then
-    protect_gui(ScreenGui)
-    ScreenGui.Parent = CoreGui
-else
-    local ok = pcall(function() ScreenGui.Parent = CoreGui end)
-    if not ok then
-        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+-- gethui() → protect_gui+CoreGui → CoreGui → PlayerGui
+local guiParented = false
+pcall(function()
+    if gethui then
+        ScreenGui.Parent = gethui()
+        guiParented = true
     end
+end)
+if not guiParented then
+    pcall(function()
+        if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end
+        if protect_gui then protect_gui(ScreenGui) end
+        ScreenGui.Parent = CoreGui
+        guiParented = true
+    end)
+end
+if not guiParented then
+    pcall(function()
+        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui", 5)
+        guiParented = true
+    end)
+end
+
+if not guiParented then
+    warn("[SkylerHub] Could not parent ScreenGui!")
+else
+    print("[SkylerHub] GUI parented OK")
 end
 
 -- ─────────────────────────────────────────────
@@ -1540,21 +1558,30 @@ UserInputService.InputBegan:Connect(function(inp, gpe)
 end)
 
 -- ─────────────────────────────────────────────
---  ANIMATED OPEN
+--  OPEN ANIMATION (non-blocking, safe)
 -- ─────────────────────────────────────────────
-Main.Size    = UDim2.fromOffset(640,0)
-Main.Position= UDim2.new(0.5,-320,0.5,0)
-tween(Main, {
-    Size     = UDim2.fromOffset(640,440),
-    Position = UDim2.new(0.5,-320,0.5,-220)
-}, 0.5, Enum.EasingStyle.Back)
+-- Set final size immediately so GUI is never invisible
+Main.Size     = UDim2.fromOffset(640, 440)
+Main.Position = UDim2.new(0.5,-320,0.5,-220)
+
+-- Then play the open animation on top
+pcall(function()
+    Main.Size     = UDim2.fromOffset(640, 0)
+    Main.Position = UDim2.new(0.5,-320,0.5,0)
+    tween(Main, {
+        Size     = UDim2.fromOffset(640, 440),
+        Position = UDim2.new(0.5,-320,0.5,-220)
+    }, 0.5, Enum.EasingStyle.Back)
+end)
 
 task.delay(0.6, function()
-    Notify("SKYLER HUB", "Loaded successfully · Script by Skyler", "success", 4)
+    Notify("SKYLER HUB", "Loaded · Script by Skyler", "success", 4)
     task.delay(0.3, function()
-        Notify("Tip", "Press RShift to toggle the UI", "info", 4)
+        Notify("Tip", "RShift to toggle UI", "info", 4)
     end)
 end)
+
+print("[SkylerHub] Ready!")
 
 -- ─────────────────────────────────────────────
 --  CLEANUP ON PLAYER LEAVE
