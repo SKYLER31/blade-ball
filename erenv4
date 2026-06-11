@@ -19,17 +19,25 @@
 ]]
 
 -- ─────────────────────────────────────────────
---  SERVICES
+--  SERVICES  (cloneref safe wrap)
 -- ─────────────────────────────────────────────
-local Players            = cloneref(game:GetService("Players"))
-local RunService         = cloneref(game:GetService("RunService"))
-local UserInputService   = cloneref(game:GetService("UserInputService"))
-local TweenService       = cloneref(game:GetService("TweenService"))
-local ReplicatedStorage  = cloneref(game:GetService("ReplicatedStorage"))
-local CoreGui            = cloneref(game:GetService("CoreGui"))
-local VirtualInputManager= game:GetService("VirtualInputManager")
-local ContextActionService=cloneref(game:GetService("ContextActionService"))
-local Workspace          = cloneref(workspace)
+local function safeService(name)
+    local ok, svc = pcall(function()
+        local s = game:GetService(name)
+        return (cloneref and cloneref(s)) or s
+    end)
+    return ok and svc or game:GetService(name)
+end
+
+local Players             = safeService("Players")
+local RunService          = safeService("RunService")
+local UserInputService    = safeService("UserInputService")
+local TweenService        = safeService("TweenService")
+local ReplicatedStorage   = safeService("ReplicatedStorage")
+local CoreGui             = safeService("CoreGui")
+local ContextActionService= safeService("ContextActionService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Workspace           = (cloneref and cloneref(workspace)) or workspace
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = Workspace.CurrentCamera
@@ -90,16 +98,36 @@ local Flags = {
 }
 
 -- ─────────────────────────────────────────────
---  UI BOOT — destroy old instance
+--  UI BOOT — destroy old + safe parent
 -- ─────────────────────────────────────────────
-local old = CoreGui:FindFirstChild("SkylerHub")
-if old then old:Destroy() end
+pcall(function()
+    local old = CoreGui:FindFirstChild("SkylerHub")
+    if old then old:Destroy() end
+end)
+pcall(function()
+    local old = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("SkylerHub")
+    if old then old:Destroy() end
+end)
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name            = "SkylerHub"
 ScreenGui.ResetOnSpawn    = false
+ScreenGui.DisplayOrder    = 999
 ScreenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
-ScreenGui.Parent          = CoreGui
+
+-- protect_gui → CoreGui → PlayerGui fallback
+if syn and syn.protect_gui then
+    syn.protect_gui(ScreenGui)
+    ScreenGui.Parent = CoreGui
+elseif protect_gui then
+    protect_gui(ScreenGui)
+    ScreenGui.Parent = CoreGui
+else
+    local ok = pcall(function() ScreenGui.Parent = CoreGui end)
+    if not ok then
+        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    end
+end
 
 -- ─────────────────────────────────────────────
 --  MAIN WINDOW
@@ -686,8 +714,17 @@ local MovementPage  = CreateTab("Movement",     "🏃")
 local VisualsPage   = CreateTab("Visuals",      "👁")
 local MiscPage      = CreateTab("Misc",         "⚙")
 
--- Activate first tab
-tabList[1].MouseButton1Click:Fire()
+-- Activate first tab (deferred so all elements exist)
+task.defer(function()
+    if tabList[1] then
+        activeTab = 1
+        tabList[1].BackgroundColor3     = C.ACCENT_DIM
+        tabList[1].TextColor3           = C.TEXT
+        local ind = tabList[1]:FindFirstChild("Frame")
+        if ind then ind.BackgroundTransparency = 0 end
+        pageList[1].Visible = true
+    end
+end)
 
 -- ─────────────────────────────────────────────
 --  AUTO PARRY ENGINE
@@ -1095,37 +1132,60 @@ AP.Parry = function(ptype)
 end
 
 -- ─────────────────────────────────────────────
---  __namecall HOOK  — capture parry remote
+--  REMOTE SCANNER  (no hookmetamethod = undetectable)
 -- ─────────────────────────────────────────────
-local hookedNamecall
-hookedNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-    local method = getnamecallmethod()
-    if (method == "FireServer" or method == "InvokeServer") and
-       (self.Name:lower():find("plr") or self.Name:lower():find("input") or
-        self.Name:lower():find("parr") or self.Name:lower():find("skill") or
-        self.Name:lower():find("ability")) then
-        local args = {...}
-        -- Capture if it looks like a parry call (has CFrame argument)
-        for _, v in ipairs(args) do
-            if typeof(v) == "CFrame" then
-                if not ParryRemotes[self] then
-                    ParryRemotes[self] = args
-                    Notify("Remote Captured", self:GetFullName(), "success", 3)
-                else
-                    ParryRemotes[self] = args
+local REMOTE_KEYWORDS = {"plrinput","input","parry","skill","ability","action","deflect","block"}
+
+local function scanRemotes()
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    if not remotes then return end
+    for _, obj in ipairs(remotes:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            local low = obj.Name:lower()
+            for _, kw in ipairs(REMOTE_KEYWORDS) do
+                if low:find(kw) then
+                    if not ParryRemotes[obj] then
+                        ParryRemotes[obj] = {"UseAbility"}
+                        Notify("Remote Found", obj.Name, "success", 3)
+                    end
+                    break
                 end
-                break
             end
         end
     end
-    return hookedNamecall(self, ...)
+end
+
+-- Initial scan + rescan every 5s if no remotes yet
+task.spawn(function()
+    task.wait(2)
+    scanRemotes()
+    while true do
+        task.wait(5)
+        if not next(ParryRemotes) then
+            scanRemotes()
+        end
+    end
 end)
 
--- Also try static known remote
+-- Also watch for new remotes added at runtime
 pcall(function()
-    local rem = ReplicatedStorage:WaitForChild("Remotes",3):FindFirstChild("PlrInput")
+    local rem = ReplicatedStorage:WaitForChild("Remotes", 5)
     if rem then
-        ParryRemotes[rem] = {"UseAbility"}
+        rem.DescendantAdded:Connect(function(obj)
+            if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+                local low = obj.Name:lower()
+                for _, kw in ipairs(REMOTE_KEYWORDS) do
+                    if low:find(kw) then
+                        task.wait(0.5)
+                        if not ParryRemotes[obj] then
+                            ParryRemotes[obj] = {"UseAbility"}
+                            Notify("Remote Found", obj.Name, "success", 3)
+                        end
+                        break
+                    end
+                end
+            end
+        end)
     end
 end)
 
