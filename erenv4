@@ -1,7 +1,7 @@
 --[[
     ╔══════════════════════════════════════════╗
     ║      SYSTEM OPTIMIZER | Performance      ║
-    ║               Version 2.9                ║
+    ║               Version 3.0                ║
     ╚══════════════════════════════════════════╝
 ]]
 
@@ -190,7 +190,7 @@ local Sub = Instance.new("TextLabel", TopBar)
 Sub.Size               = UDim2.new(0,350,0,14)
 Sub.Position           = UDim2.new(0,18,0,28)
 Sub.BackgroundTransparency = 1
-Sub.Text               = "Graphics & Performance Controller  ·  v2.9"
+Sub.Text               = "Graphics & Performance Controller  ·  v3.0"
 Sub.Font               = Enum.Font.Gotham
 Sub.TextSize           = 11
 Sub.TextColor3         = C.TEXT_DIM
@@ -420,7 +420,7 @@ local function Toggle(page, title, desc, flag, callback)
     Instance.new("UICorner",pill).CornerRadius = UDim.new(1,0)
 
     local knob = Instance.new("Frame", pill)
-    knob.KnobName = "Knob"
+    knob.Name = "Knob"
     knob.Size           = UDim2.fromOffset(18,18)
     knob.Position       = UDim2.new(0,3,0.5,-9)
     knob.BackgroundColor3 = Color3.new(1,1,1)
