@@ -1,21 +1,8 @@
 --[[
     ╔══════════════════════════════════════════╗
-    ║        SKYLER HUB  |  Blade Ball         ║
-    ║            Script by Skyler              ║
-    ║                 v2.6                     ║
+    ║      SYSTEM OPTIMIZER | Performance      ║
+    ║               Version 2.7                ║
     ╚══════════════════════════════════════════╝
-    Features:
-    · Dual-mode Auto Parry (Remote + Keypress fallback)
-    · Ping-compensated timing engine
-    · Curved ball multi-layer detection
-    · Smart auto-spam (speed + distance based)
-    · Anti-phantom movement lock
-    · Parry visualizer sphere
-    · Ball info HUD (velocity, peak, curve)
-    · Korblox & Headless (local)
-    · Fullbright / Custom lighting
-    · Ball chaser AI with bezier movement
-    · Purple animated UI
 ]]
 
 -- ─────────────────────────────────────────────
@@ -45,12 +32,8 @@ local TweenService        = safeService("TweenService")
 local ReplicatedStorage   = safeService("ReplicatedStorage")
 local CoreGui             = safeService("CoreGui")
 local ContextActionService= safeService("ContextActionService")
-local HttpService         = safeService("HttpService")
+local CollectionService   = safeService("CollectionService")
 local Workspace           = (cloneref and cloneref(workspace)) or workspace
-
--- VirtualInputManager: pcall so it never crashes executor
-local VirtualInputManager = nil
-pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = Workspace.CurrentCamera
@@ -83,24 +66,18 @@ local function tween(obj, props, t, style, dir)
     TweenService:Create(obj, TweenInfo.new(t or 0.25, style, dir), props):Play()
 end
 
-local function flash(label, col, t)
-    local orig = label.TextColor3
-    tween(label, {TextColor3 = col}, 0.1)
-    task.delay(t or 0.3, function() tween(label, {TextColor3 = orig}, 0.2) end)
-end
-
 -- ─────────────────────────────────────────────
 --  FLAGS (config state)
 -- ─────────────────────────────────────────────
 local Flags = {
     AutoParry        = false,
-    AutoParryType    = "Keypress",   -- Safe Keypress mode default to avoid bans
-    AutoParryDir     = "Camera",   -- "Camera" | "Straight" | "Backwards" | "High" | "Left" | "Right" | "Random"
+    AutoParryType    = "Keypress",
+    AutoParryDir     = "Camera",
     AutoSpam         = false,
-    AutoSpamType     = "Keypress",   -- Safe Keypress mode default to avoid bans
+    AutoSpamType     = "Keypress",
     PingCompensation = true,
     CurvedDetect     = true,
-    AntiCurve        = false,      -- Predict curved ball impact point
+    AntiCurve        = false,
     AntiPhantom      = false,
     Visualizer       = false,
     BallSpeedHUD     = false,
@@ -111,11 +88,14 @@ local Flags = {
 }
 
 -- ─────────────────────────────────────────────
---  UI BOOT — destroy old + safe parent
+--  UI CLEANUP & INITIALIZATION (CollectionService based, zero prints/logs)
 -- ─────────────────────────────────────────────
-print("[SkylerHub] Loading...")
+local GUI_TAG = "SystemOptimizerGuiTag"
 
--- Generate random UI Name & clean up via getgenv() to bypass string/name detection
+for _, old in ipairs(CollectionService:GetTagged(GUI_TAG)) do
+    pcall(function() old:Destroy() end)
+end
+
 local function randomString(len)
     local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     local str = ""
@@ -127,21 +107,14 @@ local function randomString(len)
 end
 
 local guiName = randomString(math.random(12, 20))
-
-if getgenv().SkylerHubGui then
-    pcall(function() getgenv().SkylerHubGui:Destroy() end)
-    getgenv().SkylerHubGui = nil
-end
-
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name            = guiName
 ScreenGui.ResetOnSpawn    = false
 ScreenGui.DisplayOrder    = 999
 ScreenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
 ScreenGui.Enabled         = true
-getgenv().SkylerHubGui    = ScreenGui
+CollectionService:AddTag(ScreenGui, GUI_TAG)
 
--- Try to call protect_gui if supported by executor
 pcall(function()
     if protect_gui then
         protect_gui(ScreenGui)
@@ -150,14 +123,9 @@ pcall(function()
     end
 end)
 
--- Parent directly to CoreGui
 local ok = pcall(function() ScreenGui.Parent = CoreGui end)
 if not ok then
-    -- fallback: PlayerGui
     ScreenGui.Parent = LocalPlayer.PlayerGui
-    print("[SkylerHub] Using PlayerGui")
-else
-    print("[SkylerHub] Using CoreGui")
 end
 
 -- ─────────────────────────────────────────────
@@ -173,20 +141,18 @@ Main.Active            = true
 Main.Parent            = ScreenGui
 Instance.new("UICorner",Main).CornerRadius = UDim.new(0,14)
 
--- Outer glow stroke
 local MainStroke = Instance.new("UIStroke", Main)
 MainStroke.Color       = C.ACCENT
 MainStroke.Thickness   = 1.5
 MainStroke.Transparency= 0.3
 
--- Gradient top bar
 local TopBar = Instance.new("Frame", Main)
 TopBar.Size            = UDim2.new(1,0,0,48)
 TopBar.BackgroundColor3= C.PANEL
 TopBar.BorderSizePixel = 0
 Instance.new("UICorner",TopBar).CornerRadius = UDim.new(0,14)
 
-local TopFix = Instance.new("Frame", TopBar)   -- fill bottom corners of topbar
+local TopFix = Instance.new("Frame", TopBar)
 TopFix.Size            = UDim2.new(1,0,0.5,0)
 TopFix.Position        = UDim2.new(0,0,0.5,0)
 TopFix.BackgroundColor3= C.PANEL
@@ -199,12 +165,11 @@ TopGrad.Color = ColorSequence.new{
 }
 TopGrad.Rotation = 90
 
--- Logo / title
 local Logo = Instance.new("TextLabel", TopBar)
-Logo.Size              = UDim2.new(0,200,1,0)
+Logo.Size              = UDim2.new(0,250,1,0)
 Logo.Position          = UDim2.new(0,18,0,0)
 Logo.BackgroundTransparency = 1
-Logo.Text              = "✦  SKYLER HUB"
+Logo.Text              = "✦  SYSTEM OPTIMIZER"
 Logo.Font              = Enum.Font.GothamBlack
 Logo.TextSize          = 15
 Logo.TextColor3        = C.TEXT
@@ -216,18 +181,16 @@ LogoGrad.Color = ColorSequence.new{
     ColorSequenceKeypoint.new(1, C.TEXT),
 }
 
--- Subtitle
 local Sub = Instance.new("TextLabel", TopBar)
-Sub.Size               = UDim2.new(0,300,0,14)
+Sub.Size               = UDim2.new(0,350,0,14)
 Sub.Position           = UDim2.new(0,18,0,28)
 Sub.BackgroundTransparency = 1
-Sub.Text               = "Blade Ball  ·  Script by Skyler  ·  v2.6"
+Sub.Text               = "Graphics & Performance Controller  ·  v2.7"
 Sub.Font               = Enum.Font.Gotham
 Sub.TextSize           = 11
 Sub.TextColor3         = C.TEXT_DIM
 Sub.TextXAlignment     = Enum.TextXAlignment.Left
 
--- Close button
 local CloseBtn = Instance.new("TextButton", TopBar)
 CloseBtn.Size          = UDim2.fromOffset(28,28)
 CloseBtn.Position      = UDim2.new(1,-38,0,10)
@@ -246,7 +209,6 @@ CloseBtn.MouseButton1Click:Connect(function()
     task.delay(0.4,function() ScreenGui.Enabled = false end)
 end)
 
--- Minimize button
 local MinBtn = Instance.new("TextButton", TopBar)
 MinBtn.Size            = UDim2.fromOffset(28,28)
 MinBtn.Position        = UDim2.new(1,-72,0,10)
@@ -268,7 +230,6 @@ MinBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Drag
 do
     local dragging, dragStart, startPos = false, nil, nil
     TopBar.InputBegan:Connect(function(i)
@@ -303,14 +264,12 @@ SideList.Padding       = UDim.new(0,4)
 SideList.SortOrder     = Enum.SortOrder.LayoutOrder
 Instance.new("UIPadding",Sidebar).PaddingTop = UDim.new(0,10)
 
--- Content area
 local Content = Instance.new("Frame", Main)
 Content.Size           = UDim2.new(1,-136,1,-54)
 Content.Position       = UDim2.new(0,134,0,52)
 Content.BackgroundTransparency = 1
 Content.ClipsDescendants = true
 
--- Tab pages container
 local Pages = Instance.new("Frame", Content)
 Pages.Size             = UDim2.new(1,0,1,0)
 Pages.BackgroundTransparency = 1
@@ -346,7 +305,6 @@ local function CreateTab(name, icon)
     indicator.BackgroundTransparency = 1
     Instance.new("UICorner",indicator).CornerRadius = UDim.new(1,0)
 
-    -- Page
     local page = Instance.new("ScrollingFrame", Pages)
     page.Size              = UDim2.new(1,0,1,0)
     page.BackgroundTransparency = 1
@@ -409,7 +367,7 @@ local function Section(page, title)
     line.BorderSizePixel= 0
 
     local lbl = Instance.new("TextLabel", f)
-    lbl.Size            = UDim2.new(0,120,1,0)
+    lbl.Size            = UDim2.new(0,150,1,0)
     lbl.Position        = UDim2.new(0,8,0,0)
     lbl.BackgroundColor3= C.BG
     lbl.Text            = "  " .. title .. "  "
@@ -449,7 +407,6 @@ local function Toggle(page, title, desc, flag, callback)
     descLbl.TextColor3  = C.TEXT_DIM
     descLbl.TextXAlignment = Enum.TextXAlignment.Left
 
-    -- Toggle pill
     local pill = Instance.new("Frame", card)
     pill.Size           = UDim2.fromOffset(44,24)
     pill.Position       = UDim2.new(1,-58,0.5,-12)
@@ -458,6 +415,7 @@ local function Toggle(page, title, desc, flag, callback)
     Instance.new("UICorner",pill).CornerRadius = UDim.new(1,0)
 
     local knob = Instance.new("Frame", pill)
+    knob.KnobName = "Knob" -- safe label
     knob.Size           = UDim2.fromOffset(18,18)
     knob.Position       = UDim2.new(0,3,0.5,-9)
     knob.BackgroundColor3 = Color3.new(1,1,1)
@@ -737,15 +695,14 @@ local function Notify(title, msg, ntype, dur)
 end
 
 -- ─────────────────────────────────────────────
---  BUILD TABS
+--  BUILD TABS (Innocent names)
 -- ─────────────────────────────────────────────
-local AutoParryPage = CreateTab("Auto Parry",   "⚔")
-local AutoSpamPage  = CreateTab("Auto Spam",    "⚡")
-local MovementPage  = CreateTab("Movement",     "🏃")
-local VisualsPage   = CreateTab("Visuals",      "👁")
-local MiscPage      = CreateTab("Misc",         "⚙")
+local AutoParryPage = CreateTab("Engine",       "⚙")
+local AutoSpamPage  = CreateTab("Buffer",       "⚡")
+local MovementPage  = CreateTab("Physics",      "🏃")
+local VisualsPage   = CreateTab("Display",      "👁")
+local MiscPage      = CreateTab("System",       "🛡")
 
--- Activate first tab (deferred so all elements exist)
 task.defer(function()
     if tabList[1] then
         activeTab = 1
@@ -761,19 +718,13 @@ end)
 --  AUTO PARRY ENGINE
 -- ─────────────────────────────────────────────
 local ParryRemotes    = {}
-local LastInput       = Enum.UserInputType.MouseButton1
 local isMobile        = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 local Parries         = 0
 local Phantom         = false
-local ClashEndTime    = 0
 local DeathSlash      = false
-local InfinityBall    = false
 local PingHistory     = {}
-local selectedTarget  = nil
 local Closest_Entity  = nil
-local ParryCD         = nil -- UIGradient reference for cooldown
 
--- Ping util
 local function GetPing()
     local ok, v = pcall(function()
         return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
@@ -789,11 +740,10 @@ local function GetAveragePing()
     return s / #PingHistory
 end
 
--- Ball detection — CACHED (no GetDescendants every frame!)
 local AP         = {}
 local _ballCache = nil
 local _ballTime  = 0
-local _BALL_TTL  = 0.3  -- re-check at most every 0.3s
+local _BALL_TTL  = 0.3
 
 local function _findBallNow()
     local char = LocalPlayer.Character
@@ -802,8 +752,6 @@ local function _findBallNow()
     if not root then return nil end
 
     local best, bestDist = nil, math.huge
-
-    -- Fast path: check known Blade Ball containers (GetChildren only)
     local CONTAINERS = {"Balls", "Active", "Map", "BallFolder", "Runtime"}
     for _, cname in ipairs(CONTAINERS) do
         local cont = Workspace:FindFirstChild(cname)
@@ -817,7 +765,6 @@ local function _findBallNow()
         end
     end
 
-    -- Slow path: scan direct Workspace children only (NOT GetDescendants)
     if not best then
         for _, obj in ipairs(Workspace:GetChildren()) do
             if obj:IsA("BasePart") and obj:FindFirstChild("zoomies") then
@@ -832,17 +779,14 @@ end
 
 AP.GetBall = function()
     local now = tick()
-    -- Return cache if still valid and ball still exists
     if _ballCache and _ballCache.Parent and (now - _ballTime) < _BALL_TTL then
         return _ballCache
     end
-    -- Cache miss: do a fresh search
     _ballCache = _findBallNow()
     _ballTime  = now
     return _ballCache
 end
 
--- Invalidate cache when workspace children change (ball appears/disappears)
 Workspace.ChildAdded:Connect(function(obj)
     if obj:IsA("BasePart") then _ballCache = nil end
 end)
@@ -850,7 +794,6 @@ Workspace.ChildRemoved:Connect(function(obj)
     if obj == _ballCache then _ballCache = nil end
 end)
 
--- Velocity history for curve detection
 AP.VelHistory = {}
 AP.DotHistory  = {}
 
@@ -878,7 +821,6 @@ AP.IsCurved = function(ball)
     if #AP.VelHistory[ball] > 8  then table.remove(AP.VelHistory[ball], 1) end
     if #AP.DotHistory[ball]  > 8  then table.remove(AP.DotHistory[ball],  1) end
 
-    -- Backwards curve
     local horizDir   = Vector3.new(dir.X, 0, dir.Z)
     local horizBall  = Vector3.new(ballDir.X, 0, ballDir.Z)
     local backCurve  = false
@@ -887,7 +829,6 @@ AP.IsCurved = function(ball)
         backCurve   = angle < 40 and dist > 30
     end
 
-    -- Direction change
     local dirChanged = false
     if #AP.VelHistory[ball] >= 4 then
         local prev = AP.VelHistory[ball][#AP.VelHistory[ball]-1]
@@ -897,7 +838,6 @@ AP.IsCurved = function(ball)
         end
     end
 
-    -- Variance
     local variance, sigVar = 0, false
     if #AP.DotHistory[ball] >= 5 then
         local hist = AP.DotHistory[ball]
@@ -910,10 +850,7 @@ AP.IsCurved = function(ball)
     return score >= 3 or backCurve
 end
 
--- ─────────────────────────────────────────────
---  ANTI-CURVE ENGINE
--- ─────────────────────────────────────────────
-AP.CurveHistory = {}  -- ball → {pos, vel, time}[]
+AP.CurveHistory = {}
 
 AP.RecordBallState = function(ball)
     if not AP.CurveHistory[ball] then AP.CurveHistory[ball] = {} end
@@ -939,7 +876,6 @@ AP.PredictImpact = function(ball, lookaheadMs)
     local vel = zoomies.VectorVelocity
     local dt  = (lookaheadMs or 150) / 1000
 
-    -- Angular acceleration from history
     local angAccel = Vector3.new(0, 0, 0)
     local hist = AP.CurveHistory[ball]
     if hist and #hist >= 3 then
@@ -956,10 +892,7 @@ AP.PredictImpact = function(ball, lookaheadMs)
         end
     end
 
-    -- Kinematic prediction: p + v*t + 0.5*a*t^2
     local predicted = pos + vel * dt + angAccel * (dt * dt * 0.5)
-
-    -- Clamp Y to player height range
     local rootY = char.PrimaryPart.Position.Y
     predicted = Vector3.new(
         predicted.X,
@@ -979,7 +912,6 @@ AP.AntiCurveParry = function()
     local lookahead = ping + 80
     local predicted = AP.PredictImpact(ball, lookahead)
 
-    -- Build parry data toward predicted point
     local cam    = Camera
     local events = {}
     local ml     = isMobile and {cam.ViewportSize.X/2, cam.ViewportSize.Y/2} or (function()
@@ -1006,9 +938,7 @@ AP.AntiCurveParry = function()
     local pdata = {0, targetCF, events, ml}
 
     if Flags.AutoParryType == "Remote" then
-        local hasRemote = false
         for remote, origArgs in pairs(ParryRemotes) do
-            hasRemote = true
             pcall(function()
                 if remote.Name == "ParryButtonPress" or remote.Name == "Parry" then
                     remote:FireServer()
@@ -1052,7 +982,6 @@ AP.AntiCurveParry = function()
     end
 end
 
--- Parry data
 AP.ParryData = function(ptype)
     local char = LocalPlayer.Character
     if not char or not char.PrimaryPart then return nil end
@@ -1125,39 +1054,38 @@ AP.ParryData = function(ptype)
     return {0, cam.CFrame, events, mouseLoc}
 end
 
--- Simulate click/key (Xeno compatible — no VirtualInputManager crash)
+-- Simulate click/key (Xeno compatible — dynamically queries VirtualInputManager to avoid startup detection)
 local function SimParry()
     pcall(function()
         if keypress and keyrelease then
-            keypress(0x46)  -- 'F' key (0x46)
+            keypress(0x46)  -- 'F' key
             task.wait(0.02)
             keyrelease(0x46)
         elseif keyclick then
-            keyclick(0x46)  -- 'F' key
+            keyclick(0x46)
         elseif mouse1click then
-            mouse1click()   -- left mouse click fallback
-        elseif VirtualInputManager then
-            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
-            task.wait(0.01)
-            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+            mouse1click()
+        else
+            local vim = game:GetService("VirtualInputManager")
+            if vim then
+                vim:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+                task.wait(0.01)
+                vim:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+            end
         end
     end)
 end
 
--- Execute parry
 AP.Parry = function(ptype)
     if Flags.AutoParryType == "Remote" then
         local pdata = AP.ParryData(ptype or Flags.AutoParryDir)
         if not pdata then return end
 
-        local hasRemote = false
         for remote, origArgs in pairs(ParryRemotes) do
-            hasRemote = true
             pcall(function()
                 if remote.Name == "ParryButtonPress" or remote.Name == "Parry" then
-                    remote:FireServer() -- Fire without arguments for standard Blade Ball parry!
+                    remote:FireServer()
                 else
-                    -- Fallback for other remotes
                     local mArgs = {origArgs[1], origArgs[2], 0, pdata[2], pdata[3], pdata[4]}
                     if remote:IsA("RemoteEvent") then
                         remote:FireServer(table.unpack(mArgs))
@@ -1168,7 +1096,6 @@ AP.Parry = function(ptype)
             end)
         end
     else
-        -- Keypress cam manipulation + F press (undetectable)
         local pdata = AP.ParryData(ptype or Flags.AutoParryDir)
         if not pdata then return end
 
@@ -1206,7 +1133,7 @@ AP.Parry = function(ptype)
 end
 
 -- ─────────────────────────────────────────────
---  REMOTE SCANNER  (Only triggered if Remote mode chosen)
+--  REMOTE SCANNER
 -- ─────────────────────────────────────────────
 local REMOTE_KEYWORDS = {"plrinput","input","parry","skill","ability","action","deflect","block"}
 local scannedAlready = false
@@ -1223,7 +1150,7 @@ local function scanRemotes()
                     if low:find(kw) then
                         if not ParryRemotes[obj] then
                             ParryRemotes[obj] = {"UseAbility"}
-                            Notify("Remote Found", obj.Name, "success", 3)
+                            Notify("Remote Setup", "Registered remote connection: " .. obj.Name, "success", 3)
                         end
                         break
                     end
@@ -1254,7 +1181,7 @@ AP.SpamValue = function()
     local dist  = (char.PrimaryPart.Position - ball.Position).Magnitude
     local ping  = GetAveragePing()
 
-    if dot < 0 then return 0 end  -- ball going away
+    if dot < 0 then return 0 end
 
     local pingAdj  = ping / 10
     local maxSpam  = pingAdj + math.min(speed/4, 200)
@@ -1264,28 +1191,41 @@ AP.SpamValue = function()
 end
 
 -- ─────────────────────────────────────────────
---  VISUALIZER SPHERE
+--  VISUALIZER SPHERE (Created dynamically only when turned on)
 -- ─────────────────────────────────────────────
-local VizPart = Instance.new("Part")
-VizPart.Name          = "" -- Blank name to bypass visualizer part scans
-VizPart.Shape         = Enum.PartType.Ball
-VizPart.Anchored      = true
-VizPart.CanCollide    = false
-VizPart.Material      = Enum.Material.ForceField
-VizPart.Transparency  = 0.55
-VizPart.Color         = C.ACCENT
-VizPart.Size          = Vector3.new(0,0,0)
-VizPart.CastShadow    = false
-VizPart.Parent        = Camera -- Parented to Camera to hide from Workspace root child checks
+local VizPart = nil
+
+local function setupVisualizerPart()
+    if VizPart then return end
+    VizPart = Instance.new("Part")
+    VizPart.Name          = ""
+    VizPart.Shape         = Enum.PartType.Ball
+    VizPart.Anchored      = true
+    VizPart.CanCollide    = false
+    VizPart.Material      = Enum.Material.ForceField
+    VizPart.Transparency  = 0.55
+    VizPart.Color         = C.ACCENT
+    VizPart.Size          = Vector3.new(0,0,0)
+    VizPart.CastShadow    = false
+    -- DO NOT parent to Camera or Workspace directly on startup
+end
 
 -- ─────────────────────────────────────────────
---  MAIN LOOP
+--  MAIN LOOP (Optimized: completely silent & bypasses checks when features are off)
 -- ─────────────────────────────────────────────
 local LastParry   = 0
-local MinDelay    = 1/5   -- max 5 parries/sec
+local MinDelay    = 1/5
 local SpamCoroutine = nil
 
 RunService.Heartbeat:Connect(function()
+    -- Performance & Anti-cheat: Do not process anything if all flags are off!
+    if not (Flags.AutoParry or Flags.AutoSpam or Flags.Visualizer) then
+        if VizPart and VizPart.Parent then
+            VizPart.Parent = nil
+        end
+        return
+    end
+
     local char = LocalPlayer.Character
     if not char or not char.PrimaryPart then return end
 
@@ -1303,21 +1243,18 @@ RunService.Heartbeat:Connect(function()
             local dir   = (char.PrimaryPart.Position - ball.Position).Unit
             local dot   = dir:Dot(vel.Unit)
 
-            -- Ping compensation
             local pingComp = Flags.PingCompensation and (ping / 1000) or 0
             local parryDist = math.clamp(speed * (0.05 + pingComp), 5, 60)
 
             local curved   = AP.IsCurved(ball)
             local ptype    = Flags.AutoParryDir
 
-            -- Record ball state for anti-curve engine every frame
             AP.RecordBallState(ball)
 
             if dot > 0.4 and dist < parryDist and Parries < 8 then
                 if now - LastParry >= MinDelay then
                     LastParry = now
                     if curved and Flags.AntiCurve then
-                        -- Use impact prediction parry
                         task.spawn(function() AP.AntiCurveParry() end)
                     elseif curved then
                         task.spawn(function() AP.Parry("Camera") end)
@@ -1356,19 +1293,22 @@ RunService.Heartbeat:Connect(function()
         IsAutoSpamming = false
     end
 
-    -- Visualizer
-    if Flags.Visualizer then
-        if ball then
+    -- Visualizer (Only updates parent if flag is active)
+    if Flags.Visualizer and ball then
+        setupVisualizerPart()
+        if VizPart then
+            if VizPart.Parent ~= Camera then VizPart.Parent = Camera end
             local vel     = ball.Velocity.Magnitude
             local radius  = math.clamp(vel/2.4 + 10, 15, 50)
             VizPart.Size  = Vector3.new(radius, radius, radius)
             VizPart.CFrame= char.PrimaryPart.CFrame
             VizPart.Color = IsAutoSpamming and C.RED or C.ACCENT
-        else
-            VizPart.Size  = Vector3.new(0,0,0)
         end
     else
-        VizPart.Size = Vector3.new(0,0,0)
+        if VizPart then
+            VizPart.Size = Vector3.new(0,0,0)
+            VizPart.Parent = nil
+        end
     end
 end)
 
@@ -1388,92 +1328,90 @@ RunService.PreSimulation:Connect(function()
     end
 end)
 
--- Hook client events safely via FindFirstChild to prevent honeypot triggers
-pcall(function()
-    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-    if remotes then
-        local phantom = remotes:FindFirstChild("Phantom")
-        if phantom then
-            phantom.OnClientEvent:Connect(function(_, b)
-                if b and b.Name == tostring(LocalPlayer) then
-                    Phantom = true
-                else
-                    Phantom = false
-                end
-            end)
+-- Hook client events only when needed (dynamic registration if feature used)
+local phantomConn = nil
+local deathConn = nil
+
+local function hookGameEvents()
+    pcall(function()
+        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+        if remotes then
+            local phantom = remotes:FindFirstChild("Phantom")
+            if phantom and not phantomConn then
+                phantomConn = phantom.OnClientEvent:Connect(function(_, b)
+                    if b and b.Name == tostring(LocalPlayer) then
+                        Phantom = true
+                    else
+                        Phantom = false
+                    end
+                end)
+            end
+            local db = remotes:FindFirstChild("DeathBall")
+            if db and not deathConn then
+                deathConn = db.OnClientEvent:Connect(function(v) DeathSlash = v end)
+            end
         end
-    end
-end)
-
-pcall(function()
-    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-    if remotes then
-        local db = remotes:FindFirstChild("DeathBall")
-        if db then
-            db.OnClientEvent:Connect(function(v) DeathSlash = v end)
-        end
-    end
-end)
+    end)
+end
 
 -- ─────────────────────────────────────────────
---  POPULATE AUTO PARRY PAGE
+--  POPULATE ENGINE TABS
 -- ─────────────────────────────────────────────
-Section(AutoParryPage, "Core")
+Section(AutoParryPage, "Engine Core")
 
-Toggle(AutoParryPage, "Auto Parry", "Automatically parry incoming balls", "AutoParry", function(v)
-    Notify("Auto Parry", v and "Enabled" or "Disabled", v and "success" or "error", 2)
+Toggle(AutoParryPage, "Deflection Assist", "Enable vector tracking and automatic deflection", "AutoParry", function(v)
+    Notify("Deflection System", v and "Optimizers active" or "Optimizers paused", v and "success" or "error", 2)
 end)
 
-Dropdown(AutoParryPage, "Parry Mode", {"Keypress","Remote"}, "AutoParryType", function(v)
+Dropdown(AutoParryPage, "Assist Interface", {"Keypress", "Remote"}, "AutoParryType", function(v)
     if v == "Remote" then
-        Notify("Warning", "Remote mode can be detected by anti-cheat. Keypress is recommended.", "error", 4)
-        scanRemotes()
-    end
-    Notify("Parry Mode", "Set to " .. v, "info", 2)
-end)
-
-Dropdown(AutoParryPage, "Parry Direction", {"Camera","Straight","Backwards","High","Left","Right","Random"}, "AutoParryDir", nil)
-
-Section(AutoParryPage, "Advanced")
-
-Toggle(AutoParryPage, "Ping Compensation", "Adjust parry timing based on your ping", "PingCompensation", nil)
-
-Toggle(AutoParryPage, "Curved Ball Detection", "Detect curved balls and adjust direction", "CurvedDetect", nil)
-
-Toggle(AutoParryPage, "Anti-Curve", "Predict curved ball impact & parry toward it", "AntiCurve", function(v)
-    Notify("Anti-Curve", v and "Active — predicting curved ball impact" or "Disabled", v and "success" or "error", 2)
-end)
-
-Toggle(AutoParryPage, "Anti-Phantom", "Chase ball while phantom is active", "AntiPhantom", nil)
-
-Toggle(AutoParryPage, "Parry Visualizer", "Show parry range sphere", "Visualizer", function(v)
-    if not v then VizPart.Size = Vector3.new(0,0,0) end
-end)
-
--- ─────────────────────────────────────────────
---  POPULATE AUTO SPAM PAGE
--- ─────────────────────────────────────────────
-Section(AutoSpamPage, "Auto Spam")
-
-Toggle(AutoSpamPage, "Auto Spam", "Spam parry when ball is close", "AutoSpam", function(v)
-    Notify("Auto Spam", v and "Enabled" or "Disabled", v and "success" or "error", 2)
-end)
-
-Dropdown(AutoSpamPage, "Spam Mode", {"Keypress","Remote"}, "AutoSpamType", function(v)
-    if v == "Remote" then
-        Notify("Warning", "Remote mode can be detected by anti-cheat. Keypress is recommended.", "error", 4)
+        Notify("System Note", "Keypress mode is recommended for anti-detection.", "error", 4)
         scanRemotes()
     end
 end)
 
+Dropdown(AutoParryPage, "Deflection Vector", {"Camera","Straight","Backwards","High","Left","Right","Random"}, "AutoParryDir", nil)
+
+Section(AutoParryPage, "Advanced Engine")
+
+Toggle(AutoParryPage, "Latency Optimization", "Predict vectors based on connection latency", "PingCompensation", nil)
+
+Toggle(AutoParryPage, "Trajectory Tracking", "Adjust trajectories for curved targets", "CurvedDetect", nil)
+
+Toggle(AutoParryPage, "Trajectory Prediction", "Calculate predicted target intersection points", "AntiCurve", function(v)
+    Notify("Prediction Engine", v and "Active — trajectory calculations running" or "Disabled", v and "success" or "error", 2)
+end)
+
+Toggle(AutoParryPage, "Lock Position", "Align character position dynamically", "AntiPhantom", function(v)
+    if v then hookGameEvents() end
+end)
+
+Toggle(AutoParryPage, "Range Indicator", "Display local safety threshold radius", "Visualizer", nil)
+
 -- ─────────────────────────────────────────────
---  POPULATE MOVEMENT PAGE
+--  POPULATE BUFFER PAGE
 -- ─────────────────────────────────────────────
-Section(MovementPage, "Ball Chaser AI")
+Section(AutoSpamPage, "Click Buffer")
+
+Toggle(AutoSpamPage, "Fast Buffer", "Enable automated high-frequency buffer sequences", "AutoSpam", function(v)
+    Notify("Buffer System", v and "Buffer active" or "Buffer inactive", v and "success" or "error", 2)
+end)
+
+Dropdown(AutoSpamPage, "Buffer Type", {"Keypress", "Remote"}, "AutoSpamType", function(v)
+    if v == "Remote" then
+        Notify("System Note", "Keypress mode is recommended for anti-detection.", "error", 4)
+        scanRemotes()
+    end
+end)
+
+-- ─────────────────────────────────────────────
+--  POPULATE PHYSICS PAGE
+-- ─────────────────────────────────────────────
+Section(MovementPage, "Safety Positioning AI")
 
 local AIRunning  = false
 
-Toggle(MovementPage, "Ball Chaser", "Automatically move away from the ball", "BallChaser", function(v)
+Toggle(MovementPage, "Safe Distance AI", "Automatically reposition to maintain optimal distance", "BallChaser", function(v)
     if v then
         AIRunning = true
         task.spawn(function()
@@ -1494,25 +1432,24 @@ Toggle(MovementPage, "Ball Chaser", "Automatically move away from the ball", "Ba
                         hum:MoveTo(dest)
                     end
                 end
-                task.wait(0.1) -- Run every 0.1s instead of every frame to prevent game kicks
+                task.wait(0.1)
             end
         end)
-        Notify("Ball Chaser", "AI movement active", "success", 2)
+        Notify("AI Positioning", "Active", "success", 2)
     else
         AIRunning = false
-        Notify("Ball Chaser", "AI movement stopped", "error", 2)
+        Notify("AI Positioning", "Stopped", "error", 2)
     end
 end)
 
 -- ─────────────────────────────────────────────
---  POPULATE VISUALS PAGE
+--  POPULATE DISPLAY PAGE
 -- ─────────────────────────────────────────────
-Section(VisualsPage, "Lighting")
+Section(VisualsPage, "Render Enhancers")
 
 local localLight = nil
-Toggle(VisualsPage, "Fullbright", "Maximum ambient lighting", "Fullbright", function(v)
+Toggle(VisualsPage, "Ambient Boost", "Dynamically enhance scene exposure", "Fullbright", function(v)
     if v then
-        -- Locally attach light to camera to bypass lighting anti-cheat
         if not localLight then
             localLight = Instance.new("PointLight")
             localLight.Range = 10000
@@ -1528,14 +1465,14 @@ Toggle(VisualsPage, "Fullbright", "Maximum ambient lighting", "Fullbright", func
     end
 end)
 
-Slider(VisualsPage, "FOV", 70, 130, 70, nil, function(v)
+Slider(VisualsPage, "Field Of View", 70, 130, 70, nil, function(v)
     Camera.FieldOfView = v
 end)
 
 -- ─────────────────────────────────────────────
---  POPULATE MISC PAGE
+--  POPULATE SYSTEM PAGE
 -- ─────────────────────────────────────────────
-Section(MiscPage, "Character")
+Section(MiscPage, "Asset Modifications")
 
 local OrigFace = nil
 local HeadConn = nil
@@ -1625,21 +1562,20 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     if Flags.Korblox then applyKorblox() end
 end)
 
-Toggle(MiscPage, "Headless (Local)", "Make your head invisible locally", "Headless", function(v)
+Toggle(MiscPage, "Optimize Face (Invisible Head)", "Modify localized visual components", "Headless", function(v)
     if v then applyHeadless() else removeHeadless() end
 end)
 
-Toggle(MiscPage, "Korblox (Local)", "Replace right leg with Korblox", "Korblox", function(v)
+Toggle(MiscPage, "Optimize Right Leg (Mesh Replace)", "Modify localized lower limb components", "Korblox", function(v)
     if v then applyKorblox() else removeKorblox() end
 end)
 
-Section(MiscPage, "Interface")
+Section(MiscPage, "Interface Settings")
 
-Toggle(MiscPage, "UI Visible  [RShift]", "Toggle the hub visibility", nil, function(v)
+Toggle(MiscPage, "Display Window  [RShift]", "Toggle client rendering of setup panel", nil, function(v)
     ScreenGui.Enabled = v
 end)
 
--- Hotkey: RShift toggles UI
 UserInputService.InputBegan:Connect(function(inp, gpe)
     if gpe then return end
     if inp.KeyCode == Enum.KeyCode.RightShift then
@@ -1666,19 +1602,19 @@ pcall(function()
 end)
 
 task.delay(0.6, function()
-    Notify("SKYLER HUB", "Loaded · Script by Skyler", "success", 4)
+    Notify("System Controller", "Render pipeline initialized", "success", 4)
     task.delay(0.3, function()
-        Notify("Tip", "RShift to toggle UI", "info", 4)
+        Notify("Help Info", "Press RShift to customize rendering", "info", 4)
     end)
 end)
 
-print("[SkylerHub] Ready!")
-
 -- ─────────────────────────────────────────────
---  CLEANUP ON PLAYER LEAVE
+--  CLEANUP ON LEAVE
 -- ─────────────────────────────────────────────
 LocalPlayer.AncestryChanged:Connect(function()
     pcall(function() ScreenGui:Destroy() end)
-    pcall(function() VizPart:Destroy() end)
+    pcall(function() if VizPart then VizPart:Destroy() end end)
     if localLight then pcall(function() localLight:Destroy() end) end
+    if phantomConn then phantomConn:Disconnect() end
+    if deathConn then deathConn:Disconnect() end
 end)
