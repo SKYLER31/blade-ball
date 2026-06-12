@@ -1,7 +1,7 @@
 --[[
     ╔══════════════════════════════════════════╗
     ║      SYSTEM OPTIMIZER | Performance      ║
-    ║               Version 2.8                ║
+    ║               Version 2.9                ║
     ╚══════════════════════════════════════════╝
 ]]
 
@@ -17,7 +17,6 @@ if not task then
     }
 end
 
--- Standard Service getters (avoid cloneref on UI elements to prevent rendering bugs on Xeno)
 local Players             = game:GetService("Players")
 local RunService          = game:GetService("RunService")
 local UserInputService    = game:GetService("UserInputService")
@@ -51,7 +50,7 @@ local C = {
 }
 
 -- ─────────────────────────────────────────────
---  TWEEN HELPERS (With safe property assignment fallback if TweenService errors)
+--  TWEEN HELPERS (With direct property assignment fallback)
 -- ─────────────────────────────────────────────
 local function tween(obj, props, t, style, dir)
     style = style or Enum.EasingStyle.Quint
@@ -62,7 +61,6 @@ local function tween(obj, props, t, style, dir)
         tw:Play()
     end)
     if not ok or not tw then
-        -- Direct fallback to prevent stuck UI frames
         for k, v in pairs(props) do
             pcall(function() obj[k] = v end)
         end
@@ -126,14 +124,9 @@ pcall(function()
     end
 end)
 
--- Safe parenting order: gethui() -> PlayerGui -> CoreGui
+-- Force PlayerGui as primary for guaranteed rendering, CoreGui as fallback
 local parent = nil
-pcall(function()
-    if gethui then parent = gethui() end
-end)
-if not parent then
-    pcall(function() parent = LocalPlayer:WaitForChild("PlayerGui", 5) end)
-end
+pcall(function() parent = LocalPlayer:WaitForChild("PlayerGui", 5) end)
 if not parent then
     pcall(function() parent = CoreGui end)
 end
@@ -197,7 +190,7 @@ local Sub = Instance.new("TextLabel", TopBar)
 Sub.Size               = UDim2.new(0,350,0,14)
 Sub.Position           = UDim2.new(0,18,0,28)
 Sub.BackgroundTransparency = 1
-Sub.Text               = "Graphics & Performance Controller  ·  v2.8"
+Sub.Text               = "Graphics & Performance Controller  ·  v2.9"
 Sub.Font               = Enum.Font.Gotham
 Sub.TextSize           = 11
 Sub.TextColor3         = C.TEXT_DIM
@@ -427,7 +420,7 @@ local function Toggle(page, title, desc, flag, callback)
     Instance.new("UICorner",pill).CornerRadius = UDim.new(1,0)
 
     local knob = Instance.new("Frame", pill)
-    knob.KnobName = "Knob" -- safe label
+    knob.KnobName = "Knob"
     knob.Size           = UDim2.fromOffset(18,18)
     knob.Position       = UDim2.new(0,3,0.5,-9)
     knob.BackgroundColor3 = Color3.new(1,1,1)
@@ -1162,7 +1155,7 @@ local function scanRemotes()
                     if low:find(kw) then
                         if not ParryRemotes[obj] then
                             ParryRemotes[obj] = {"UseAbility"}
-                            Notify("Remote Setup", "Registered remote connection: " .. obj.Name, "success", 3)
+                            Notify("Remote Setup", "Registered remote: " .. obj.Name, "success", 3)
                         end
                         break
                     end
@@ -1612,7 +1605,6 @@ local animOk = pcall(function()
 end)
 
 if not animOk then
-    -- Absolute fallback guarantee
     Main.Size     = UDim2.fromOffset(640, 440)
     Main.Position = UDim2.new(0.5,-320,0.5,-220)
 end
