@@ -1,12 +1,12 @@
 --[[
     ╔══════════════════════════════════════════╗
     ║      SYSTEM OPTIMIZER | Performance      ║
-    ║               Version 2.7                ║
+    ║               Version 2.8                ║
     ╚══════════════════════════════════════════╝
 ]]
 
 -- ─────────────────────────────────────────────
---  COMPAT SHIMS  (task, cloneref, etc.)
+--  COMPAT SHIMS  (task, etc.)
 -- ─────────────────────────────────────────────
 if not task then
     task = {
@@ -17,23 +17,16 @@ if not task then
     }
 end
 
-local function safeService(name)
-    local ok, svc = pcall(function()
-        local s = game:GetService(name)
-        return (cloneref and cloneref(s)) or s
-    end)
-    return ok and svc or game:GetService(name)
-end
-
-local Players             = safeService("Players")
-local RunService          = safeService("RunService")
-local UserInputService    = safeService("UserInputService")
-local TweenService        = safeService("TweenService")
-local ReplicatedStorage   = safeService("ReplicatedStorage")
-local CoreGui             = safeService("CoreGui")
-local ContextActionService= safeService("ContextActionService")
-local CollectionService   = safeService("CollectionService")
-local Workspace           = (cloneref and cloneref(workspace)) or workspace
+-- Standard Service getters (avoid cloneref on UI elements to prevent rendering bugs on Xeno)
+local Players             = game:GetService("Players")
+local RunService          = game:GetService("RunService")
+local UserInputService    = game:GetService("UserInputService")
+local TweenService        = game:GetService("TweenService")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local CoreGui             = game:GetService("CoreGui")
+local ContextActionService= game:GetService("ContextActionService")
+local CollectionService   = game:GetService("CollectionService")
+local Workspace           = workspace
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = Workspace.CurrentCamera
@@ -58,12 +51,22 @@ local C = {
 }
 
 -- ─────────────────────────────────────────────
---  TWEEN HELPERS
+--  TWEEN HELPERS (With safe property assignment fallback if TweenService errors)
 -- ─────────────────────────────────────────────
 local function tween(obj, props, t, style, dir)
     style = style or Enum.EasingStyle.Quint
     dir   = dir   or Enum.EasingDirection.Out
-    TweenService:Create(obj, TweenInfo.new(t or 0.25, style, dir), props):Play()
+    local tw = nil
+    local ok = pcall(function()
+        tw = TweenService:Create(obj, TweenInfo.new(t or 0.25, style, dir), props)
+        tw:Play()
+    end)
+    if not ok or not tw then
+        -- Direct fallback to prevent stuck UI frames
+        for k, v in pairs(props) do
+            pcall(function() obj[k] = v end)
+        end
+    end
 end
 
 -- ─────────────────────────────────────────────
@@ -88,7 +91,7 @@ local Flags = {
 }
 
 -- ─────────────────────────────────────────────
---  UI CLEANUP & INITIALIZATION (CollectionService based, zero prints/logs)
+--  UI CLEANUP & INITIALIZATION
 -- ─────────────────────────────────────────────
 local GUI_TAG = "SystemOptimizerGuiTag"
 
@@ -123,10 +126,18 @@ pcall(function()
     end
 end)
 
-local ok = pcall(function() ScreenGui.Parent = CoreGui end)
-if not ok then
-    ScreenGui.Parent = LocalPlayer.PlayerGui
+-- Safe parenting order: gethui() -> PlayerGui -> CoreGui
+local parent = nil
+pcall(function()
+    if gethui then parent = gethui() end
+end)
+if not parent then
+    pcall(function() parent = LocalPlayer:WaitForChild("PlayerGui", 5) end)
 end
+if not parent then
+    pcall(function() parent = CoreGui end)
+end
+ScreenGui.Parent = parent
 
 -- ─────────────────────────────────────────────
 --  MAIN WINDOW
@@ -138,6 +149,7 @@ Main.Position          = UDim2.new(0.5,-320,0.5,-220)
 Main.BackgroundColor3  = C.BG
 Main.BorderSizePixel   = 0
 Main.Active            = true
+Main.Visible           = true
 Main.Parent            = ScreenGui
 Instance.new("UICorner",Main).CornerRadius = UDim.new(0,14)
 
@@ -185,7 +197,7 @@ local Sub = Instance.new("TextLabel", TopBar)
 Sub.Size               = UDim2.new(0,350,0,14)
 Sub.Position           = UDim2.new(0,18,0,28)
 Sub.BackgroundTransparency = 1
-Sub.Text               = "Graphics & Performance Controller  ·  v2.7"
+Sub.Text               = "Graphics & Performance Controller  ·  v2.8"
 Sub.Font               = Enum.Font.Gotham
 Sub.TextSize           = 11
 Sub.TextColor3         = C.TEXT_DIM
@@ -695,7 +707,7 @@ local function Notify(title, msg, ntype, dur)
 end
 
 -- ─────────────────────────────────────────────
---  BUILD TABS (Innocent names)
+--  BUILD TABS
 -- ─────────────────────────────────────────────
 local AutoParryPage = CreateTab("Engine",       "⚙")
 local AutoSpamPage  = CreateTab("Buffer",       "⚡")
@@ -1054,7 +1066,7 @@ AP.ParryData = function(ptype)
     return {0, cam.CFrame, events, mouseLoc}
 end
 
--- Simulate click/key (Xeno compatible — dynamically queries VirtualInputManager to avoid startup detection)
+-- Simulate click/key
 local function SimParry()
     pcall(function()
         if keypress and keyrelease then
@@ -1191,7 +1203,7 @@ AP.SpamValue = function()
 end
 
 -- ─────────────────────────────────────────────
---  VISUALIZER SPHERE (Created dynamically only when turned on)
+--  VISUALIZER SPHERE
 -- ─────────────────────────────────────────────
 local VizPart = nil
 
@@ -1207,18 +1219,16 @@ local function setupVisualizerPart()
     VizPart.Color         = C.ACCENT
     VizPart.Size          = Vector3.new(0,0,0)
     VizPart.CastShadow    = false
-    -- DO NOT parent to Camera or Workspace directly on startup
 end
 
 -- ─────────────────────────────────────────────
---  MAIN LOOP (Optimized: completely silent & bypasses checks when features are off)
+--  MAIN LOOP
 -- ─────────────────────────────────────────────
 local LastParry   = 0
 local MinDelay    = 1/5
 local SpamCoroutine = nil
 
 RunService.Heartbeat:Connect(function()
-    -- Performance & Anti-cheat: Do not process anything if all flags are off!
     if not (Flags.AutoParry or Flags.AutoSpam or Flags.Visualizer) then
         if VizPart and VizPart.Parent then
             VizPart.Parent = nil
@@ -1293,7 +1303,7 @@ RunService.Heartbeat:Connect(function()
         IsAutoSpamming = false
     end
 
-    -- Visualizer (Only updates parent if flag is active)
+    -- Visualizer
     if Flags.Visualizer and ball then
         setupVisualizerPart()
         if VizPart then
@@ -1328,7 +1338,7 @@ RunService.PreSimulation:Connect(function()
     end
 end)
 
--- Hook client events only when needed (dynamic registration if feature used)
+-- Hook client events
 local phantomConn = nil
 local deathConn = nil
 
@@ -1355,7 +1365,7 @@ local function hookGameEvents()
 end
 
 -- ─────────────────────────────────────────────
---  POPULATE ENGINE TABS
+--  POPULATE TABS
 -- ─────────────────────────────────────────────
 Section(AutoParryPage, "Engine Core")
 
@@ -1587,12 +1597,12 @@ UserInputService.InputBegan:Connect(function(inp, gpe)
 end)
 
 -- ─────────────────────────────────────────────
---  OPEN ANIMATION (non-blocking, safe)
+--  OPEN ANIMATION (With direct fallbacks)
 -- ─────────────────────────────────────────────
 Main.Size     = UDim2.fromOffset(640, 440)
 Main.Position = UDim2.new(0.5,-320,0.5,-220)
 
-pcall(function()
+local animOk = pcall(function()
     Main.Size     = UDim2.fromOffset(640, 0)
     Main.Position = UDim2.new(0.5,-320,0.5,0)
     tween(Main, {
@@ -1600,6 +1610,12 @@ pcall(function()
         Position = UDim2.new(0.5,-320,0.5,-220)
     }, 0.5, Enum.EasingStyle.Back)
 end)
+
+if not animOk then
+    -- Absolute fallback guarantee
+    Main.Size     = UDim2.fromOffset(640, 440)
+    Main.Position = UDim2.new(0.5,-320,0.5,-220)
+end
 
 task.delay(0.6, function()
     Notify("System Controller", "Render pipeline initialized", "success", 4)
