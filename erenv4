@@ -2,7 +2,7 @@
     ╔══════════════════════════════════════════╗
     ║        SKYLER HUB  |  Blade Ball         ║
     ║            Script by Skyler              ║
-    ║                 v2.0                     ║
+    ║                 v2.6                     ║
     ╚══════════════════════════════════════════╝
     Features:
     · Dual-mode Auto Parry (Remote + Keypress fallback)
@@ -21,7 +21,6 @@
 -- ─────────────────────────────────────────────
 --  COMPAT SHIMS  (task, cloneref, etc.)
 -- ─────────────────────────────────────────────
--- task library fallback for older executors
 if not task then
     task = {
         spawn = function(f,...) return coroutine.wrap(f)(...) end,
@@ -31,9 +30,6 @@ if not task then
     }
 end
 
--- ─────────────────────────────────────────────
---  SERVICES  (all pcall-safe)
--- ─────────────────────────────────────────────
 local function safeService(name)
     local ok, svc = pcall(function()
         local s = game:GetService(name)
@@ -49,6 +45,7 @@ local TweenService        = safeService("TweenService")
 local ReplicatedStorage   = safeService("ReplicatedStorage")
 local CoreGui             = safeService("CoreGui")
 local ContextActionService= safeService("ContextActionService")
+local HttpService         = safeService("HttpService")
 local Workspace           = (cloneref and cloneref(workspace)) or workspace
 
 -- VirtualInputManager: pcall so it never crashes executor
@@ -97,10 +94,10 @@ end
 -- ─────────────────────────────────────────────
 local Flags = {
     AutoParry        = false,
-    AutoParryType    = "Remote",   -- "Remote" | "Keypress"
+    AutoParryType    = "Keypress",   -- Safe Keypress mode default to avoid bans
     AutoParryDir     = "Camera",   -- "Camera" | "Straight" | "Backwards" | "High" | "Left" | "Right" | "Random"
     AutoSpam         = false,
-    AutoSpamType     = "Remote",
+    AutoSpamType     = "Keypress",   -- Safe Keypress mode default to avoid bans
     PingCompensation = true,
     CurvedDetect     = true,
     AntiCurve        = false,      -- Predict curved ball impact point
@@ -118,23 +115,42 @@ local Flags = {
 -- ─────────────────────────────────────────────
 print("[SkylerHub] Loading...")
 
-pcall(function()
-    for _, gui in ipairs({
-        CoreGui:FindFirstChild("SkylerHub"),
-        LocalPlayer.PlayerGui:FindFirstChild("SkylerHub")
-    }) do
-        if gui then gui:Destroy() end
+-- Generate random UI Name & clean up via getgenv() to bypass string/name detection
+local function randomString(len)
+    local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    local str = ""
+    for i = 1, len or 16 do
+        local r = math.random(1, #chars)
+        str = str .. chars:sub(r, r)
     end
-end)
+    return str
+end
+
+local guiName = randomString(math.random(12, 20))
+
+if getgenv().SkylerHubGui then
+    pcall(function() getgenv().SkylerHubGui:Destroy() end)
+    getgenv().SkylerHubGui = nil
+end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name            = "SkylerHub"
+ScreenGui.Name            = guiName
 ScreenGui.ResetOnSpawn    = false
 ScreenGui.DisplayOrder    = 999
 ScreenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
 ScreenGui.Enabled         = true
+getgenv().SkylerHubGui    = ScreenGui
 
--- Xeno: parent directly to CoreGui (no gethui needed)
+-- Try to call protect_gui if supported by executor
+pcall(function()
+    if protect_gui then
+        protect_gui(ScreenGui)
+    elseif syn and syn.protect_gui then
+        syn.protect_gui(ScreenGui)
+    end
+end)
+
+-- Parent directly to CoreGui
 local ok = pcall(function() ScreenGui.Parent = CoreGui end)
 if not ok then
     -- fallback: PlayerGui
@@ -205,7 +221,7 @@ local Sub = Instance.new("TextLabel", TopBar)
 Sub.Size               = UDim2.new(0,300,0,14)
 Sub.Position           = UDim2.new(0,18,0,28)
 Sub.BackgroundTransparency = 1
-Sub.Text               = "Blade Ball  ·  Script by Skyler  ·  v2.0"
+Sub.Text               = "Blade Ball  ·  Script by Skyler  ·  v2.6"
 Sub.Font               = Enum.Font.Gotham
 Sub.TextSize           = 11
 Sub.TextColor3         = C.TEXT_DIM
@@ -989,21 +1005,24 @@ AP.AntiCurveParry = function()
         or  cam.CFrame
     local pdata = {0, targetCF, events, ml}
 
-    -- Fire remote with anti-curve CFrame
-    local hasRemote = false
-    for remote, origArgs in pairs(ParryRemotes) do
-        hasRemote = true
-        local mArgs = {origArgs[1], origArgs[2], 0, pdata[2], pdata[3], pdata[4]}
-        pcall(function()
-            if remote:IsA("RemoteEvent") then
-                remote:FireServer(table.unpack(mArgs))
-            elseif remote:IsA("RemoteFunction") then
-                remote:InvokeServer(table.unpack(mArgs))
-            end
-        end)
-    end
-
-    if not hasRemote or Flags.AutoParryType == "Keypress" then
+    if Flags.AutoParryType == "Remote" then
+        local hasRemote = false
+        for remote, origArgs in pairs(ParryRemotes) do
+            hasRemote = true
+            pcall(function()
+                if remote.Name == "ParryButtonPress" or remote.Name == "Parry" then
+                    remote:FireServer()
+                else
+                    local mArgs = {origArgs[1], origArgs[2], 0, pdata[2], pdata[3], pdata[4]}
+                    if remote:IsA("RemoteEvent") then
+                        remote:FireServer(table.unpack(mArgs))
+                    elseif remote:IsA("RemoteFunction") then
+                        remote:InvokeServer(table.unpack(mArgs))
+                    end
+                end
+            end)
+        end
+    else
         local orig   = cam.CFrame
         local target = targetCF * CFrame.Angles(
             math.rad(math.random(-3, 3)),
@@ -1106,43 +1125,53 @@ AP.ParryData = function(ptype)
     return {0, cam.CFrame, events, mouseLoc}
 end
 
--- Simulate click (Xeno compatible — no VirtualInputManager crash)
+-- Simulate click/key (Xeno compatible — no VirtualInputManager crash)
 local function SimParry()
     pcall(function()
-        -- mouse1click = most compatible across executors including Xeno
-        if mouse1click then
-            mouse1click()
+        if keypress and keyrelease then
+            keypress(0x46)  -- 'F' key (0x46)
+            task.wait(0.02)
+            keyrelease(0x46)
         elseif keyclick then
-            keyclick(0x01)  -- left mouse button
+            keyclick(0x46)  -- 'F' key
+        elseif mouse1click then
+            mouse1click()   -- left mouse click fallback
         elseif VirtualInputManager then
-            -- Last resort — wrapped so it can't crash executor
-            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true,  game, 0)
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
             task.wait(0.01)
-            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
         end
     end)
 end
 
 -- Execute parry
 AP.Parry = function(ptype)
-    local pdata = AP.ParryData(ptype or Flags.AutoParryDir)
-    if not pdata then return end
+    if Flags.AutoParryType == "Remote" then
+        local pdata = AP.ParryData(ptype or Flags.AutoParryDir)
+        if not pdata then return end
 
-    local hasRemote = false
-    for remote, origArgs in pairs(ParryRemotes) do
-        hasRemote = true
-        local mArgs = {origArgs[1], origArgs[2], 0, pdata[2], pdata[3], pdata[4]}
-        pcall(function()
-            if remote:IsA("RemoteEvent") then
-                remote:FireServer(table.unpack(mArgs))
-            elseif remote:IsA("RemoteFunction") then
-                remote:InvokeServer(table.unpack(mArgs))
-            end
-        end)
-    end
+        local hasRemote = false
+        for remote, origArgs in pairs(ParryRemotes) do
+            hasRemote = true
+            pcall(function()
+                if remote.Name == "ParryButtonPress" or remote.Name == "Parry" then
+                    remote:FireServer() -- Fire without arguments for standard Blade Ball parry!
+                else
+                    -- Fallback for other remotes
+                    local mArgs = {origArgs[1], origArgs[2], 0, pdata[2], pdata[3], pdata[4]}
+                    if remote:IsA("RemoteEvent") then
+                        remote:FireServer(table.unpack(mArgs))
+                    elseif remote:IsA("RemoteFunction") then
+                        remote:InvokeServer(table.unpack(mArgs))
+                    end
+                end
+            end)
+        end
+    else
+        -- Keypress cam manipulation + F press (undetectable)
+        local pdata = AP.ParryData(ptype or Flags.AutoParryDir)
+        if not pdata then return end
 
-    if not hasRemote or Flags.AutoParryType == "Keypress" then
-        -- Keypress cam manipulation
         local cam       = Camera
         local orig      = cam.CFrame
         local target    = pdata[2] * CFrame.Angles(math.rad(math.random(-4,4)), math.rad(math.random(-4,4)), 0)
@@ -1177,51 +1206,21 @@ AP.Parry = function(ptype)
 end
 
 -- ─────────────────────────────────────────────
---  REMOTE SCANNER  (no hookmetamethod = undetectable)
+--  REMOTE SCANNER  (Only triggered if Remote mode chosen)
 -- ─────────────────────────────────────────────
 local REMOTE_KEYWORDS = {"plrinput","input","parry","skill","ability","action","deflect","block"}
+local scannedAlready = false
 
 local function scanRemotes()
-    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-    if not remotes then return end
-    for _, obj in ipairs(remotes:GetDescendants()) do
-        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-            local low = obj.Name:lower()
-            for _, kw in ipairs(REMOTE_KEYWORDS) do
-                if low:find(kw) then
-                    if not ParryRemotes[obj] then
-                        ParryRemotes[obj] = {"UseAbility"}
-                        Notify("Remote Found", obj.Name, "success", 3)
-                    end
-                    break
-                end
-            end
-        end
-    end
-end
-
--- Initial scan + rescan every 5s if no remotes yet
-task.spawn(function()
-    task.wait(2)
-    scanRemotes()
-    while true do
-        task.wait(5)
-        if not next(ParryRemotes) then
-            scanRemotes()
-        end
-    end
-end)
-
--- Also watch for new remotes added at runtime
-pcall(function()
-    local rem = ReplicatedStorage:WaitForChild("Remotes", 5)
-    if rem then
-        rem.DescendantAdded:Connect(function(obj)
+    if scannedAlready then return end
+    pcall(function()
+        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+        if not remotes then return end
+        for _, obj in ipairs(remotes:GetDescendants()) do
             if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
                 local low = obj.Name:lower()
                 for _, kw in ipairs(REMOTE_KEYWORDS) do
                     if low:find(kw) then
-                        task.wait(0.5)
                         if not ParryRemotes[obj] then
                             ParryRemotes[obj] = {"UseAbility"}
                             Notify("Remote Found", obj.Name, "success", 3)
@@ -1230,9 +1229,10 @@ pcall(function()
                     end
                 end
             end
-        end)
-    end
-end)
+        end
+        scannedAlready = true
+    end)
+end
 
 -- ─────────────────────────────────────────────
 --  AUTO SPAM
@@ -1266,8 +1266,8 @@ end
 -- ─────────────────────────────────────────────
 --  VISUALIZER SPHERE
 -- ─────────────────────────────────────────────
-local VizPart = Instance.new("Part", Workspace)
-VizPart.Name          = "SkylerViz"
+local VizPart = Instance.new("Part")
+VizPart.Name          = "" -- Blank name to bypass visualizer part scans
 VizPart.Shape         = Enum.PartType.Ball
 VizPart.Anchored      = true
 VizPart.CanCollide    = false
@@ -1276,6 +1276,7 @@ VizPart.Transparency  = 0.55
 VizPart.Color         = C.ACCENT
 VizPart.Size          = Vector3.new(0,0,0)
 VizPart.CastShadow    = false
+VizPart.Parent        = Camera -- Parented to Camera to hide from Workspace root child checks
 
 -- ─────────────────────────────────────────────
 --  MAIN LOOP
@@ -1387,19 +1388,31 @@ RunService.PreSimulation:Connect(function()
     end
 end)
 
--- Known remote events
+-- Hook client events safely via FindFirstChild to prevent honeypot triggers
 pcall(function()
-    ReplicatedStorage.Remotes.Phantom.OnClientEvent:Connect(function(_, b)
-        if b and b.Name == tostring(LocalPlayer) then
-            Phantom = true
-        else
-            Phantom = false
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    if remotes then
+        local phantom = remotes:FindFirstChild("Phantom")
+        if phantom then
+            phantom.OnClientEvent:Connect(function(_, b)
+                if b and b.Name == tostring(LocalPlayer) then
+                    Phantom = true
+                else
+                    Phantom = false
+                end
+            end)
         end
-    end)
+    end
 end)
 
 pcall(function()
-    ReplicatedStorage.Remotes.DeathBall.OnClientEvent:Connect(function(v) DeathSlash = v end)
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    if remotes then
+        local db = remotes:FindFirstChild("DeathBall")
+        if db then
+            db.OnClientEvent:Connect(function(v) DeathSlash = v end)
+        end
+    end
 end)
 
 -- ─────────────────────────────────────────────
@@ -1411,7 +1424,11 @@ Toggle(AutoParryPage, "Auto Parry", "Automatically parry incoming balls", "AutoP
     Notify("Auto Parry", v and "Enabled" or "Disabled", v and "success" or "error", 2)
 end)
 
-Dropdown(AutoParryPage, "Parry Mode", {"Remote","Keypress"}, "AutoParryType", function(v)
+Dropdown(AutoParryPage, "Parry Mode", {"Keypress","Remote"}, "AutoParryType", function(v)
+    if v == "Remote" then
+        Notify("Warning", "Remote mode can be detected by anti-cheat. Keypress is recommended.", "error", 4)
+        scanRemotes()
+    end
     Notify("Parry Mode", "Set to " .. v, "info", 2)
 end)
 
@@ -1442,7 +1459,12 @@ Toggle(AutoSpamPage, "Auto Spam", "Spam parry when ball is close", "AutoSpam", f
     Notify("Auto Spam", v and "Enabled" or "Disabled", v and "success" or "error", 2)
 end)
 
-Dropdown(AutoSpamPage, "Spam Mode", {"Remote","Keypress"}, "AutoSpamType", nil)
+Dropdown(AutoSpamPage, "Spam Mode", {"Keypress","Remote"}, "AutoSpamType", function(v)
+    if v == "Remote" then
+        Notify("Warning", "Remote mode can be detected by anti-cheat. Keypress is recommended.", "error", 4)
+        scanRemotes()
+    end
+end)
 
 -- ─────────────────────────────────────────────
 --  POPULATE MOVEMENT PAGE
@@ -1450,30 +1472,34 @@ Dropdown(AutoSpamPage, "Spam Mode", {"Remote","Keypress"}, "AutoSpamType", nil)
 Section(MovementPage, "Ball Chaser AI")
 
 local AIRunning  = false
-local AIConn     = nil
 
 Toggle(MovementPage, "Ball Chaser", "Automatically move away from the ball", "BallChaser", function(v)
     if v then
-        AIConn = RunService.Heartbeat:Connect(function()
-            local char = LocalPlayer.Character
-            if not char then return end
-            local ball = AP.GetBall()
-            local root = char:FindFirstChild("HumanoidRootPart")
-            local hum  = char:FindFirstChildOfClass("Humanoid")
-            if not ball or not root or not hum then return end
-
-            local awayDir  = (root.Position - ball.Position).Unit
-            local floor    = Workspace:FindFirstChild("FLOOR") or Workspace.Terrain
-            local targetY  = floor and (floor:IsA("BasePart") and floor.Position.Y + 5 or root.Position.Y) or root.Position.Y
-            local speed    = ball.Velocity.Magnitude
-            local gap      = 35 + math.min(speed/4, 120)
-            local dest     = root.Position + awayDir * gap
-            dest = Vector3.new(dest.X, targetY, dest.Z)
-            hum:MoveTo(dest)
+        AIRunning = true
+        task.spawn(function()
+            while AIRunning and Flags.BallChaser do
+                local char = LocalPlayer.Character
+                if char then
+                    local ball = AP.GetBall()
+                    local root = char:FindFirstChild("HumanoidRootPart")
+                    local hum  = char:FindFirstChildOfClass("Humanoid")
+                    if ball and root and hum then
+                        local awayDir  = (root.Position - ball.Position).Unit
+                        local floor    = Workspace:FindFirstChild("FLOOR") or Workspace.Terrain
+                        local targetY  = floor and (floor:IsA("BasePart") and floor.Position.Y + 5 or root.Position.Y) or root.Position.Y
+                        local speed    = ball.Velocity.Magnitude
+                        local gap      = 35 + math.min(speed/4, 120)
+                        local dest     = root.Position + awayDir * gap
+                        dest = Vector3.new(dest.X, targetY, dest.Z)
+                        hum:MoveTo(dest)
+                    end
+                end
+                task.wait(0.1) -- Run every 0.1s instead of every frame to prevent game kicks
+            end
         end)
         Notify("Ball Chaser", "AI movement active", "success", 2)
     else
-        if AIConn then AIConn:Disconnect(); AIConn = nil end
+        AIRunning = false
         Notify("Ball Chaser", "AI movement stopped", "error", 2)
     end
 end)
@@ -1483,16 +1509,22 @@ end)
 -- ─────────────────────────────────────────────
 Section(VisualsPage, "Lighting")
 
-local OrigLight = {}
+local localLight = nil
 Toggle(VisualsPage, "Fullbright", "Maximum ambient lighting", "Fullbright", function(v)
-    local light = game:GetService("Lighting")
     if v then
-        OrigLight = {Ambient = light.Ambient, Brightness = light.Brightness}
-        light.Ambient    = Color3.new(1,1,1)
-        light.Brightness = 2
+        -- Locally attach light to camera to bypass lighting anti-cheat
+        if not localLight then
+            localLight = Instance.new("PointLight")
+            localLight.Range = 10000
+            localLight.Brightness = 3
+            localLight.Shadows = false
+            localLight.Parent = Camera
+        end
     else
-        if OrigLight.Ambient then light.Ambient = OrigLight.Ambient end
-        if OrigLight.Brightness then light.Brightness = OrigLight.Brightness end
+        if localLight then
+            localLight:Destroy()
+            localLight = nil
+        end
     end
 end)
 
@@ -1507,64 +1539,98 @@ Section(MiscPage, "Character")
 
 local OrigFace = nil
 local HeadConn = nil
+local KorbloxConn = nil
 
-Toggle(MiscPage, "Headless (Local)", "Make your head invisible locally", "Headless", function(v)
+local function applyHeadless()
+    if not Flags.Headless then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local head = char:WaitForChild("Head", 5)
+    if not head then return end
+    
+    local face = head:FindFirstChild("face")
+    if face and face:IsA("Decal") then OrigFace = face.Texture end
+    head.Transparency = 1
+    for _, c in ipairs(head:GetChildren()) do
+        if c:IsA("Decal") then c:Destroy() end
+    end
+    
+    if HeadConn then HeadConn:Disconnect() end
+    HeadConn = head.ChildAdded:Connect(function(c)
+        if c:IsA("Decal") then task.defer(function() c:Destroy() end) end
+    end)
+end
+
+local function applyKorblox()
+    if not Flags.Korblox then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local rLeg = char:WaitForChild("Right Leg", 5) or char:WaitForChild("RightLowerLeg", 5)
+    if not rLeg then return end
+    
+    rLeg.Transparency = 1; rLeg.CanCollide = false
+    local kPart = char:FindFirstChild("KorbloxLeg")
+    if not kPart then
+        kPart = Instance.new("Part", char)
+        kPart.Name = "KorbloxLeg"
+    end
+    kPart.Size = rLeg.Size
+    kPart.Anchored  = true
+    kPart.CanCollide= false
+    local mesh = kPart:FindFirstChildOfClass("SpecialMesh") or Instance.new("SpecialMesh", kPart)
+    mesh.MeshId    = "http://www.roblox.com/asset/?id=12917863813"
+    mesh.TextureId = "http://roblox.com/asset/?id=12917863954"
+    mesh.Scale     = Vector3.new(1.5,1.5,1.5)
+    
+    if KorbloxConn then KorbloxConn:Disconnect() end
+    KorbloxConn = RunService.Heartbeat:Connect(function()
+        if rLeg and kPart and kPart.Parent then
+            kPart.CFrame = rLeg.CFrame * CFrame.Angles(0, math.rad(180), 0) * CFrame.new(0,0.5,0)
+        else
+            if KorbloxConn then KorbloxConn:Disconnect(); KorbloxConn = nil end
+        end
+    end)
+end
+
+local function removeHeadless()
     local char = LocalPlayer.Character
     if not char then return end
     local head = char:FindFirstChild("Head")
-    if not head then return end
-    if v then
-        local face = head:FindFirstChild("face")
-        if face and face:IsA("Decal") then OrigFace = face.Texture end
-        head.Transparency = 1
-        for _, c in ipairs(head:GetChildren()) do
-            if c:IsA("Decal") then c:Destroy() end
-        end
-        HeadConn = head.ChildAdded:Connect(function(c)
-            if c:IsA("Decal") then task.defer(function() c:Destroy() end) end
-        end)
-    else
+    if head then
         head.Transparency = 0
         if OrigFace then
             local d = Instance.new("Decal", head)
             d.Name    = "face"
             d.Texture = OrigFace
         end
-        if HeadConn then HeadConn:Disconnect(); HeadConn = nil end
     end
-end)
+    if HeadConn then HeadConn:Disconnect(); HeadConn = nil end
+end
 
-local KorbloxConn = nil
-
-Toggle(MiscPage, "Korblox (Local)", "Replace right leg with Korblox", "Korblox", function(v)
+local function removeKorblox()
     local char = LocalPlayer.Character
     if not char then return end
-    local rLeg = char:FindFirstChild("Right Leg")
-    if not rLeg then return end
-    if v then
-        rLeg.Transparency = 1; rLeg.CanCollide = false
-        local kPart = Instance.new("Part", char)
-        kPart.Name = "KorbloxLeg"
-        kPart.Size = rLeg.Size
-        kPart.Anchored  = true
-        kPart.CanCollide= false
-        local mesh = Instance.new("SpecialMesh", kPart)
-        mesh.MeshId    = "http://www.roblox.com/asset/?id=12917863813"
-        mesh.TextureId = "http://roblox.com/asset/?id=12917863954"
-        mesh.Scale     = Vector3.new(1.5,1.5,1.5)
-        KorbloxConn = RunService.Heartbeat:Connect(function()
-            if rLeg and kPart then
-                kPart.CFrame = rLeg.CFrame * CFrame.Angles(0, math.rad(180), 0) * CFrame.new(0,0.5,0)
-            else
-                KorbloxConn:Disconnect()
-            end
-        end)
-    else
-        if KorbloxConn then KorbloxConn:Disconnect(); KorbloxConn = nil end
+    local rLeg = char:FindFirstChild("Right Leg") or char:FindFirstChild("RightLowerLeg")
+    if rLeg then
         rLeg.Transparency = 0; rLeg.CanCollide = true
-        local kp = char:FindFirstChild("KorbloxLeg")
-        if kp then kp:Destroy() end
     end
+    local kp = char:FindFirstChild("KorbloxLeg")
+    if kp then kp:Destroy() end
+    if KorbloxConn then KorbloxConn:Disconnect(); KorbloxConn = nil end
+end
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    task.wait(1)
+    if Flags.Headless then applyHeadless() end
+    if Flags.Korblox then applyKorblox() end
+end)
+
+Toggle(MiscPage, "Headless (Local)", "Make your head invisible locally", "Headless", function(v)
+    if v then applyHeadless() else removeHeadless() end
+end)
+
+Toggle(MiscPage, "Korblox (Local)", "Replace right leg with Korblox", "Korblox", function(v)
+    if v then applyKorblox() else removeKorblox() end
 end)
 
 Section(MiscPage, "Interface")
@@ -1587,11 +1653,9 @@ end)
 -- ─────────────────────────────────────────────
 --  OPEN ANIMATION (non-blocking, safe)
 -- ─────────────────────────────────────────────
--- Set final size immediately so GUI is never invisible
 Main.Size     = UDim2.fromOffset(640, 440)
 Main.Position = UDim2.new(0.5,-320,0.5,-220)
 
--- Then play the open animation on top
 pcall(function()
     Main.Size     = UDim2.fromOffset(640, 0)
     Main.Position = UDim2.new(0.5,-320,0.5,0)
@@ -1616,4 +1680,5 @@ print("[SkylerHub] Ready!")
 LocalPlayer.AncestryChanged:Connect(function()
     pcall(function() ScreenGui:Destroy() end)
     pcall(function() VizPart:Destroy() end)
+    if localLight then pcall(function() localLight:Destroy() end) end
 end)
